@@ -37,8 +37,9 @@ trade proposals, then mirrors manually entered fills into a local portfolio.
 ## Architecture
 
 The system is a local modular monolith with two long-running processes: a
-FastAPI API/worker boundary and a React web client. Market data is planned for
-Parquet and DuckDB; transactional state is planned for SQLite.
+FastAPI API/worker boundary and a React web client. Market data uses immutable
+raw artifacts and normalized Parquet datasets; DuckDB remains the planned query
+layer, and transactional state is planned for SQLite.
 
 The shared decision pipeline is framework-independent:
 
@@ -47,8 +48,9 @@ point-in-time data -> features -> regime -> strategy intents -> allocation
   -> optional AI proposal -> deterministic risk -> execution plan -> ledger
 ```
 
-RQAlpha is a candidate execution-backtest adapter, not a dependency of strategy
-code. Qlib is reserved for later factor and machine-learning research.
+RQAlpha is the selected replaceable execution-backtest adapter, isolated from
+strategy code and the main application runtime. Qlib is reserved for later
+factor and machine-learning research.
 
 ## Long-Term Constraints
 
