@@ -101,6 +101,7 @@ uv run uvicorn trading_codex.main:app \
 ```bash
 cd /home/radxa/quant/trading-codex
 
+PUBLIC_ORIGIN=https://trade.example.com \
 pnpm --dir web preview \
   --host 127.0.0.1 \
   --port 5555 \
@@ -166,20 +167,54 @@ Cloudflare 控制台不同版本可能显示以下两种入口之一：
 2. 选择 **Add route > Published application**。
 3. Hostname 填写与 Access 应用完全相同的 `trade.example.com`，路径留空。
 4. Service URL 填写 `http://127.0.0.1:5555`。
-5. 在 **Additional application settings** 中设置：
-   - **HTTP Host Header**：`localhost`。
-   - **Protect with Access**：启用。
-6. 保存 route。
+5. 保存 route。
 
-`HTTP Host Header=localhost` 是当前 Vite 预览服务所需的兼容设置。否则
-Cloudflare 可能把公网域名作为 `Host` 头传给 Vite，Vite 会以
-`Blocked request. This host is not allowed` 返回 403。不要用
-`allowedHosts: true` 关闭 Vite 的 Host 校验。
+### 配置 Vite Host 白名单
 
-启用 **Protect with Access** 后，`cloudflared` 会在把请求转发给本地应用前
-验证 Access JWT。这能降低 route 或请求链配置错误时绕过 Access 的风险。
-如果控制台要求填写 Team name 或 AUD tag，应从刚创建的 Access 应用概览中
-读取对应值，不要根据 hostname 猜测。
+Cloudflare 默认会把公网 hostname 作为 HTTP `Host` 头转发给 origin。Vite 会
+拒绝未明确允许的 hostname，并返回：
+
+```text
+Blocked request. This host is not allowed.
+```
+
+启动 Vite 时通过 `PUBLIC_ORIGIN` 传入完整公网 origin。当前实际部署域名的
+命令为：
+
+```bash
+PUBLIC_ORIGIN=https://trade.zxdata.uk \
+pnpm --dir web preview \
+  --host 127.0.0.1 \
+  --port 5555 \
+  --strictPort
+```
+
+Vite 配置会验证 `PUBLIC_ORIGIN`，只提取其中的 hostname 加入精确白名单。
+变量必须是 `http://` 或 `https://` origin，可以带端口，但不能带账号密码、
+路径、查询参数或 fragment。变量未设置时不会添加任何公网 hostname，也不会
+用 `allowedHosts: true` 关闭 Host 校验。
+
+修改变量后必须停止并重新启动 `vite preview`；仅刷新浏览器不会重新加载
+配置。
+
+### 可选的 Tunnel origin 增强设置
+
+部分 Cloudflare 控制台只在 route 保存后的编辑页面显示
+**Additional application settings**，部分界面可能不显示。能够找到时可设置：
+
+- **HTTP Host Header**：`localhost`。这是 Vite Host 白名单的替代方案；已经
+  通过 `PUBLIC_ORIGIN` 配置精确白名单后不再是必需项。
+- **Protect with Access**：启用。它让 `cloudflared` 在转发前再次验证 Access
+  JWT，属于纵深防护。
+
+可能的入口为 **Zero Trust > Networks > Connectors > Cloudflare Tunnels >
+选择 tunnel > Edit > Published application routes > 选择 route > Edit**。如果
+当前界面仍没有这些选项，不要因此关闭 Vite Host 校验；保留 Access 应用、
+精确 Host 白名单和本机回环监听，并在外网完成未认证访问测试。
+
+**Protect with Access** 与前面创建的 Access 应用不是同一个开关。前者缺失不
+代表 Access 应用没有生效；是否受保护应以无痕窗口或未携带认证 Cookie 的
+外部请求是否先进入 Access 登录流程为准。
 
 如果域名由 Cloudflare 完整托管，保存 route 时会自动创建 DNS 记录。如果
 使用 partial CNAME setup，则需要按控制台提示在权威 DNS 服务商处创建 CNAME。
@@ -264,6 +299,7 @@ Type=simple
 User=radxa
 Group=radxa
 WorkingDirectory=/home/radxa/quant/trading-codex/web
+Environment=PUBLIC_ORIGIN=https://trade.zxdata.uk
 ExecStart=/home/radxa/.nvm/versions/node/v24.18.0/bin/node /home/radxa/quant/trading-codex/web/node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 5555 --strictPort
 Restart=on-failure
 RestartSec=5s
@@ -313,7 +349,7 @@ Caddy、Nginx 或由后端托管静态构建产物，同时保持 tunnel 和 Acc
 | `127.0.0.1:8000` 健康检查失败 | `trading-codex-api.service` 日志 | FastAPI 未运行或启动失败 |
 | `8000` 正常但 `5555/api/...` 失败 | `trading-codex-web.service` 和 Vite 代理 | 前端进程或代理配置异常 |
 | 公网返回 Cloudflare 502 | 先执行本机两个 `curl` | 常见原因是本地 origin 未监听，不一定是 tunnel 断线 |
-| 公网返回 Vite 403 Host 错误 | Published route 的 HTTP Host Header | 应设为 `localhost` |
+| 公网返回 Vite 403 Host 错误 | `PUBLIC_ORIGIN` 和前端进程启动时间 | 传入准确 origin 后重启 `vite preview`；HTTP Host Header 可作为替代方案 |
 | 公网直接打开应用、没有登录 | Access 应用 hostname/policy | 立即禁用 route，先修复 Access |
 | Access 登录成功但 API 显示不可用 | `curl 127.0.0.1:5555/api/v1/system/status` | 后端或 `/api` 代理故障 |
 | Tunnel 显示 Degraded | `/ready`、HA 连接数和近期日志 | 单条 QUIC 重连不等于 tunnel 全部中断 |
