@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trading-codex"
+version = "0.1.0"
+description = "Personal AI-assisted A-share trading decision workspace"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic-settings>=2.7,<3",
+  "uvicorn>=0.34,<1",
+]
+
+[project.scripts]
+trading-codex-api = "trading_codex.main:run"
+
+[dependency-groups]
+dev = [
+  "httpx2>=2,<3",
+  "pytest>=8.3,<9",
+  "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/src/trading_codex"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["backend/tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["backend/src", "backend/tests"]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
