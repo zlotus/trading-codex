@@ -21,6 +21,12 @@ Do not update project-context documentation for routine edits, formatting,
 small isolated fixes, or unaccepted exploration. Record only checks actually
 run. Do not commit or push unless the user explicitly requests it.
 
+## 文档语言
+
+- 项目文档、操作指南和交接说明以简体中文为主。
+- 代码标识符、命令、API 字段、协议名称和必要的上游专有名词保留原文。
+- 现有英文文档在发生实质性修改时逐步翻译，避免仅为翻译产生大范围变动。
+
 ## Engineering Rules
 
 - Keep strategy and allocation logic independent from backtest and live-data
