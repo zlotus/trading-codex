@@ -29,18 +29,26 @@ async def test_health(client: httpx2.AsyncClient) -> None:
 
 
 @pytest.mark.anyio
-async def test_system_status_exposes_unconfigured_boundaries(
+async def test_system_status_exposes_ready_and_unconfigured_boundaries(
     client: httpx2.AsyncClient,
 ) -> None:
     response = await client.get("/api/v1/system/status")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["mode"] == "scaffold"
+    assert payload["mode"] == "research"
     assert {component["key"] for component in payload["components"]} == {
         "historical_data",
+        "decision_kernel",
         "realtime_quotes",
         "backtest",
         "ai",
     }
-    assert all(component["state"] == "not_configured" for component in payload["components"])
+    states = {component["key"]: component["state"] for component in payload["components"]}
+    assert states == {
+        "historical_data": "ready",
+        "decision_kernel": "ready",
+        "realtime_quotes": "not_configured",
+        "backtest": "ready",
+        "ai": "not_configured",
+    }

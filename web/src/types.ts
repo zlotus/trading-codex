@@ -8,7 +8,7 @@ export interface ComponentStatus {
 }
 
 export interface SystemStatus {
-  mode: "scaffold";
+  mode: "research";
   environment: string;
   server_time: string;
   components: ComponentStatus[];

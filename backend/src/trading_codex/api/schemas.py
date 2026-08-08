@@ -20,7 +20,7 @@ class ComponentStatus(BaseModel):
 
 
 class SystemStatusResponse(BaseModel):
-    mode: Literal["scaffold"]
+    mode: Literal["research"]
     environment: str
     server_time: datetime
     components: list[ComponentStatus]

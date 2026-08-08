@@ -247,7 +247,7 @@ function TodayWorkspace({
             <span className="eyebrow">09:35 决策批次</span>
             <h2>待执行信号</h2>
           </div>
-          <button className="icon-button" disabled title="行情尚未配置" type="button"><RefreshCw size={17} /></button>
+          <button className="icon-button" disabled title="实时行情尚未配置" type="button"><RefreshCw size={17} /></button>
         </header>
 
         <div className="table-scroll">

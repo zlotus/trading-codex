@@ -57,6 +57,31 @@ class Upstream:
             received_at=RECEIVED_AT,
         )
 
+    def daily_bars(
+        self,
+        *,
+        code: str,
+        start_date: date,
+        end_date: date,
+        adjustment_flag: str = "3",
+    ) -> ProviderBatch:
+        self.requests += 1
+        query = {
+            "code": code,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "frequency": "d",
+            "adjustflag": adjustment_flag,
+        }
+        return ProviderBatch(
+            source="baostock",
+            operation="daily_bars",
+            query=query,
+            fields=("date", "adjustflag"),
+            rows=({"date": start_date.isoformat(), "adjustflag": adjustment_flag},),
+            received_at=RECEIVED_AT,
+        )
+
 
 def test_network_is_disabled_by_default_on_cache_miss(tmp_path: Path) -> None:
     upstream = Upstream()
@@ -99,6 +124,49 @@ def test_first_fetch_populates_cache_and_later_read_stays_offline(tmp_path: Path
     assert cached == fetched
     assert online.upstream_requests == 1
     assert offline.cache_hits == 1
+    assert offline_upstream.entered == 0
+    assert offline_upstream.requests == 0
+
+
+def test_adjustment_flag_has_an_exact_cache_key_and_replays_offline(tmp_path: Path) -> None:
+    raw = ImmutableRawStore(tmp_path / "raw")
+    upstream = Upstream()
+    online = CachedBaoStockClient(
+        raw,
+        upstream=upstream,  # type: ignore[arg-type]
+        allow_network=True,
+        max_upstream_requests=1,
+        minimum_request_interval=0,
+    )
+    with online:
+        fetched = online.daily_bars(
+            code="sh.600000",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+            adjustment_flag="2",
+        )
+
+    offline_upstream = Upstream()
+    offline = CachedBaoStockClient(raw, upstream=offline_upstream)  # type: ignore[arg-type]
+    with offline:
+        cached = offline.daily_bars(
+            code="sh.600000",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+            adjustment_flag="2",
+        )
+        with pytest.raises(CacheMissError, match="adjustflag=3"):
+            offline.daily_bars(
+                code="sh.600000",
+                start_date=date(2024, 1, 2),
+                end_date=date(2024, 1, 2),
+                adjustment_flag="3",
+            )
+
+    assert cached == fetched
+    assert online.upstream_requests == 1
+    assert offline.cache_hits == 1
+    assert offline.cache_misses == 1
     assert offline_upstream.entered == 0
     assert offline_upstream.requests == 0
 

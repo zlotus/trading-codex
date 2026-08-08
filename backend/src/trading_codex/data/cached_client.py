@@ -79,19 +79,31 @@ class CachedBaoStockClient:
             loader=lambda: self.upstream.historical_universe(day=day),
         )
 
-    def daily_bars(self, *, code: str, start_date: date, end_date: date) -> ProviderBatch:
+    def daily_bars(
+        self,
+        *,
+        code: str,
+        start_date: date,
+        end_date: date,
+        adjustment_flag: str = "3",
+    ) -> ProviderBatch:
+        if adjustment_flag not in {"1", "2", "3"}:
+            raise ValueError("adjustment_flag must be one of 1, 2, or 3")
         query = {
             "code": code,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "frequency": "d",
-            "adjustflag": "3",
+            "adjustflag": adjustment_flag,
         }
         return self._get(
             operation="daily_bars",
             query=query,
             loader=lambda: self.upstream.daily_bars(
-                code=code, start_date=start_date, end_date=end_date
+                code=code,
+                start_date=start_date,
+                end_date=end_date,
+                adjustment_flag=adjustment_flag,
             ),
         )
 
@@ -146,11 +158,13 @@ class CachedBaoStockClient:
         self.cache_misses += 1
         if not self.allow_network:
             raise CacheMissError(
-                f"BaoStock cache miss for {operation}; network access is disabled"
+                f"BaoStock cache miss for {operation} ({_query_text(query)}); "
+                "network access is disabled"
             )
         if self.upstream_requests >= self.max_upstream_requests:
             raise RequestBudgetExceeded(
-                f"BaoStock request budget exhausted before {operation}"
+                f"BaoStock request budget exhausted before {operation} "
+                f"({_query_text(query)})"
             )
         if not self._upstream_open:
             self.upstream.__enter__()
@@ -169,3 +183,7 @@ class CachedBaoStockClient:
         remaining = self.minimum_request_interval - elapsed
         if remaining > 0:
             self._sleep(remaining)
+
+
+def _query_text(query: dict[str, str]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in sorted(query.items()))

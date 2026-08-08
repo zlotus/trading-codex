@@ -18,3 +18,6 @@ __all__ = [
     "ProviderError",
     "RequestBudgetExceeded",
 ]
+from trading_codex.data.decision_source import ParquetDecisionSnapshotSource
+
+__all__ = ["ParquetDecisionSnapshotSource"]

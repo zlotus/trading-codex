@@ -92,13 +92,22 @@ class BaoStockClient:
             self._module.query_all_stock(**query),
         )
 
-    def daily_bars(self, *, code: str, start_date: date, end_date: date) -> ProviderBatch:
+    def daily_bars(
+        self,
+        *,
+        code: str,
+        start_date: date,
+        end_date: date,
+        adjustment_flag: str = "3",
+    ) -> ProviderBatch:
+        if adjustment_flag not in {"1", "2", "3"}:
+            raise ValueError("adjustment_flag must be one of 1, 2, or 3")
         query = {
             "code": code,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "frequency": "d",
-            "adjustflag": "3",
+            "adjustflag": adjustment_flag,
         }
         result = self._module.query_history_k_data_plus(
             code,

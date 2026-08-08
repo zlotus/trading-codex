@@ -40,6 +40,7 @@ def main(argv: list[str] | None = None) -> None:
                 end_date=args.end_date,
                 codes=codes,
                 include_five_minute_bars=args.with_five_minute,
+                include_forward_adjusted_daily=args.with_forward_adjusted_daily,
             )
         except (CacheMissError, RequestBudgetExceeded) as exc:
             print(
@@ -121,6 +122,11 @@ def _parser() -> argparse.ArgumentParser:
     _date_range(sync)
     sync.add_argument("--codes", required=True, help="comma-separated BaoStock codes")
     sync.add_argument("--with-five-minute", action="store_true")
+    sync.add_argument(
+        "--with-forward-adjusted-daily",
+        action="store_true",
+        help="also require adjustflag=2 daily bars for decision signals",
+    )
     sync.add_argument(
         "--fetch-missing",
         action="store_true",

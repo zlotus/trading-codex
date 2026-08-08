@@ -11,7 +11,8 @@ data/
 
 每条规范化记录保留 `source`、`source_received_at`、payload SHA-256 和 raw
 artifact 路径。决策查询必须显式传入带时区的 `as_of`；执行价格只使用不复权行情，
-复权序列仅用于研究和信号，并保留到复权输入的关联。
+信号只使用前复权行情。决策快照按同一 `code/date` 严格配对 `adjustflag=2` 和
+`adjustflag=3`；任一轨缺失、晚于 `as_of` 或状态不一致都会 fail closed。
 
 ## BaoStock 缓存和请求门禁
 
@@ -27,13 +28,20 @@ uv run trading-codex-data sync \
   --start-date 2024-06-03 \
   --end-date 2024-06-07 \
   --codes sh.600000 \
+  --with-forward-adjusted-daily \
   --with-five-minute
 ```
 
+`--with-forward-adjusted-daily` 是显式 opt-in；不传时仍只同步不复权日线。
+`adjustflag=2` 和 `adjustflag=3` 使用不同的 exact-query cache key，不会互相冒充
+cache hit。
+
 确实需要补缓存时，人工执行同一命令并追加一次 `--fetch-missing`。一次运行只会补
 一个 exact query；遇到下一个 cache miss 后会停止。不要把该命令放入循环、并发任务
-或面向大批标的的自动重试中。随后恢复离线命令，确认数据来自缓存且
-`upstream_requests` 为 `0`。改变日期范围或 query 参数会形成新的 cache key。
+或面向大批标的的自动重试中。每发出一次请求后，立即恢复为同一条离线命令，确认
+对应 normalized 覆盖已经更新且 `upstream_requests` 为 `0`，再人工评估下一个缺口。
+已满足 normalized 覆盖的 query 会直接跳过，因此复查时 `cache_hits` 不一定增加。
+改变日期范围、复权标志或其他 query 参数都会形成新的 cache key。
 
 ## 本地质量检查
 

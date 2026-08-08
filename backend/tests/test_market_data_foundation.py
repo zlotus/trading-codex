@@ -67,7 +67,14 @@ class FixedBaoStockClient:
             query={"day": day.isoformat()},
         )
 
-    def daily_bars(self, *, code: str, start_date: date, end_date: date) -> ProviderBatch:
+    def daily_bars(
+        self,
+        *,
+        code: str,
+        start_date: date,
+        end_date: date,
+        adjustment_flag: str = "3",
+    ) -> ProviderBatch:
         return _batch(
             "daily_bars",
             (
@@ -97,7 +104,7 @@ class FixedBaoStockClient:
                     "6.6200",
                     "22066700",
                     "146066303.7200",
-                    "3",
+                    adjustment_flag,
                     "0.075200",
                     "1",
                     "-0.302100",
@@ -109,7 +116,7 @@ class FixedBaoStockClient:
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
                 "frequency": "d",
-                "adjustflag": "3",
+                "adjustflag": adjustment_flag,
             },
         )
 
@@ -195,11 +202,19 @@ class EmptyUniverseClient(FixedBaoStockClient):
 
 
 class EmptyDailyBarsClient(FixedBaoStockClient):
-    def daily_bars(self, *, code: str, start_date: date, end_date: date) -> ProviderBatch:
+    def daily_bars(
+        self,
+        *,
+        code: str,
+        start_date: date,
+        end_date: date,
+        adjustment_flag: str = "3",
+    ) -> ProviderBatch:
         batch = super().daily_bars(
             code=code,
             start_date=start_date,
             end_date=end_date,
+            adjustment_flag=adjustment_flag,
         )
         return _batch(
             "daily_bars",
@@ -249,6 +264,32 @@ def test_sync_is_idempotent_and_preserves_provenance(tmp_path: Path) -> None:
         assert all(row["source_received_at"] == RECEIVED_AT for row in rows)
         assert all(row["source_payload_sha256"] for row in rows)
         assert all(row["raw_artifact"].endswith(".json") for row in rows)
+
+
+def test_forward_adjusted_daily_sync_is_explicit_and_idempotent(tmp_path: Path) -> None:
+    pipeline, store, _ = _pipeline(tmp_path)
+    service = BaoStockSyncService(FixedBaoStockClient(), pipeline)
+
+    first = service.sync(
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+        codes=["sh.600000"],
+        include_forward_adjusted_daily=True,
+    )
+    second = service.sync(
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+        codes=["sh.600000"],
+        include_forward_adjusted_daily=True,
+    )
+
+    assert first.included_forward_adjusted_daily is True
+    assert second.included_forward_adjusted_daily is True
+    assert {row["adjustment_flag"] for row in store.read("daily_bars").to_pylist()} == {
+        "2",
+        "3",
+    }
+    assert all(result.inserted == 0 and result.updated == 0 for result in second.results)
 
 
 def test_sync_rejects_incomplete_calendar(tmp_path: Path) -> None:

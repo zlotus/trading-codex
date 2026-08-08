@@ -31,6 +31,9 @@ class Result:
 
 
 class Module:
+    def __init__(self) -> None:
+        self.last_adjustment_flag: str | None = None
+
     def login(self) -> Result:
         return Result()
 
@@ -45,6 +48,24 @@ class Module:
             rows=[["2024-01-01", "0"], ["2024-01-02", "1"]],
         )
 
+    def query_history_k_data_plus(
+        self,
+        code: str,
+        fields: str,
+        *,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+        adjustflag: str,
+    ) -> Result:
+        assert code == "sh.600000"
+        assert fields
+        assert start_date == "2024-01-02"
+        assert end_date == "2024-01-03"
+        assert frequency == "d"
+        self.last_adjustment_flag = adjustflag
+        return Result(fields=["date", "adjustflag"])
+
 
 def test_client_collects_rows_without_pandas_result_helper() -> None:
     received_at = datetime(2024, 1, 3, tzinfo=UTC)
@@ -58,6 +79,31 @@ def test_client_collects_rows_without_pandas_result_helper() -> None:
     assert batch.received_at == received_at
     assert batch.fields == ("calendar_date", "is_trading_day")
     assert batch.rows[1] == {"calendar_date": "2024-01-02", "is_trading_day": "1"}
+
+
+def test_daily_bars_passes_explicit_adjustment_flag() -> None:
+    module = Module()
+    client = BaoStockClient(module=module)  # type: ignore[arg-type]
+
+    batch = client.daily_bars(
+        code="sh.600000",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+        adjustment_flag="2",
+    )
+
+    assert module.last_adjustment_flag == "2"
+    assert batch.query["adjustflag"] == "2"
+
+
+def test_daily_bars_rejects_unknown_adjustment_flag() -> None:
+    with pytest.raises(ValueError, match="adjustment_flag"):
+        BaoStockClient(module=Module()).daily_bars(  # type: ignore[arg-type]
+            code="sh.600000",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 3),
+            adjustment_flag="9",
+        )
 
 
 class FailedLoginModule(Module):

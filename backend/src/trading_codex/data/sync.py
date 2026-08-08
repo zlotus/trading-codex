@@ -20,7 +20,12 @@ class MarketDataClient(Protocol):
     def historical_universe(self, *, day: date) -> ProviderBatch: ...
 
     def daily_bars(
-        self, *, code: str, start_date: date, end_date: date
+        self,
+        *,
+        code: str,
+        start_date: date,
+        end_date: date,
+        adjustment_flag: str = "3",
     ) -> ProviderBatch: ...
 
     def adjustment_factors(
@@ -38,6 +43,7 @@ class SyncReport:
     end_date: date
     codes: tuple[str, ...]
     included_five_minute_bars: bool
+    included_forward_adjusted_daily: bool
     results: tuple[MergeResult, ...]
 
     def as_dict(self) -> dict[str, object]:
@@ -57,6 +63,7 @@ class SyncReport:
             "end_date": self.end_date.isoformat(),
             "codes": list(self.codes),
             "included_five_minute_bars": self.included_five_minute_bars,
+            "included_forward_adjusted_daily": self.included_forward_adjusted_daily,
             "datasets": totals,
         }
 
@@ -84,6 +91,7 @@ class BaoStockSyncService:
         end_date: date,
         codes: list[str],
         include_five_minute_bars: bool = False,
+        include_forward_adjusted_daily: bool = False,
     ) -> SyncReport:
         if end_date < start_date:
             raise ValueError("end_date must not precede start_date")
@@ -162,10 +170,13 @@ class BaoStockSyncService:
                 if row["trade_status"] and row["snapshot_date"] in trading_days
             }
             daily_rows = self.pipeline.normalized_store.read("daily_bars").to_pylist()
-            daily_pairs = {
-                (row["trade_date"], row["code"])
-                for row in daily_rows
-                if row["adjustment_flag"] == "3"
+            daily_pairs_by_flag = {
+                flag: {
+                    (row["trade_date"], row["code"])
+                    for row in daily_rows
+                    if row["adjustment_flag"] == flag
+                }
+                for flag in ("2", "3")
             }
             minute_rows = self.pipeline.normalized_store.read(
                 "five_minute_bars"
@@ -177,31 +188,38 @@ class BaoStockSyncService:
                     for day in trading_days
                     if not universe_rows or (day, code) in active_pairs
                 ]
-                missing_daily = [
-                    day for day in expected_days if (day, code) not in daily_pairs
-                ]
-                if missing_daily:
-                    rows, result = self.pipeline.ingest(
-                        self.client.daily_bars(
-                            code=code,
-                            start_date=min(missing_daily),
-                            end_date=max(missing_daily),
+                adjustment_flags = ("3", "2") if include_forward_adjusted_daily else ("3",)
+                for adjustment_flag in adjustment_flags:
+                    missing_daily = [
+                        day
+                        for day in expected_days
+                        if (day, code) not in daily_pairs_by_flag[adjustment_flag]
+                    ]
+                    if missing_daily:
+                        rows, result = self.pipeline.ingest(
+                            self.client.daily_bars(
+                                code=code,
+                                start_date=min(missing_daily),
+                                end_date=max(missing_daily),
+                                adjustment_flag=adjustment_flag,
+                            )
                         )
-                    )
-                    results.append(result)
-                    fetched_days = {
-                        row["trade_date"]
-                        for row in rows
-                        if row["code"] == code and row["adjustment_flag"] == "3"
-                    }
-                    still_missing_daily = sorted(set(missing_daily) - fetched_days)
-                    if still_missing_daily:
-                        missing = ", ".join(
-                            day.isoformat() for day in still_missing_daily[:5]
-                        )
-                        raise DataValidationError(
-                            f"daily bars are incomplete for {code}: {missing}"
-                        )
+                        results.append(result)
+                        fetched_days = {
+                            row["trade_date"]
+                            for row in rows
+                            if row["code"] == code
+                            and row["adjustment_flag"] == adjustment_flag
+                        }
+                        still_missing_daily = sorted(set(missing_daily) - fetched_days)
+                        if still_missing_daily:
+                            missing = ", ".join(
+                                day.isoformat() for day in still_missing_daily[:5]
+                            )
+                            raise DataValidationError(
+                                "daily bars are incomplete for "
+                                f"{code} adjustflag={adjustment_flag}: {missing}"
+                            )
                 _, result = self.pipeline.ingest(
                     self.client.adjustment_factors(
                         code=code, start_date=start_date, end_date=end_date
@@ -227,6 +245,7 @@ class BaoStockSyncService:
             end_date=end_date,
             codes=normalized_codes,
             included_five_minute_bars=include_five_minute_bars,
+            included_forward_adjusted_daily=include_forward_adjusted_daily,
             results=tuple(results),
         )
 

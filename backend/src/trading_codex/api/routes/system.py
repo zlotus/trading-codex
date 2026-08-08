@@ -19,33 +19,39 @@ async def health() -> HealthResponse:
 async def system_status() -> SystemStatusResponse:
     settings = get_settings()
     return SystemStatusResponse(
-        mode="scaffold",
+        mode="research",
         environment=settings.environment,
         server_time=datetime.now(ZoneInfo("Asia/Shanghai")),
         components=[
             ComponentStatus(
                 key="historical_data",
                 label="历史数据",
-                state="not_configured",
-                detail="BaoStock adapter is planned for Milestone 1.",
+                state="ready",
+                detail="本地 BaoStock raw cache、normalized Parquet 和 as_of 查询已就绪。",
+            ),
+            ComponentStatus(
+                key="decision_kernel",
+                label="决策内核",
+                state="ready",
+                detail="确定性动量策略、分配、硬风险和执行计划已接入共享管线。",
             ),
             ComponentStatus(
                 key="realtime_quotes",
                 label="实时行情",
                 state="not_configured",
-                detail="Opening-session quote adapters are not connected.",
+                detail="开盘时段实时行情 adapter 尚未接入。",
             ),
             ComponentStatus(
                 key="backtest",
                 label="回测引擎",
-                state="not_configured",
-                detail="RQAlpha feasibility spike is pending.",
+                state="ready",
+                detail="共享历史 replay 与隔离的 RQAlpha 6.3.0 日频适配器已就绪。",
             ),
             ComponentStatus(
                 key="ai",
                 label="AI 协作",
                 state="not_configured",
-                detail="No model provider is configured.",
+                detail="尚未配置模型提供方，AI 不能参与当前决策。",
             ),
         ],
     )

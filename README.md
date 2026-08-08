@@ -4,10 +4,11 @@ Trading Codex 是一个个人使用的 AI 辅助 A 股交易决策系统。它�
 `as_of` 时间边界约束的历史研究、开盘时段行情快照、可审计的策略配置、
 确定性风险控制，以及人工成交后的仓位同步整合到同一个工作区中。
 
-仓库已完成 Milestone 1：本地行情数据基础和 RQAlpha 回测适配可行性验证已经
-实现。交易策略、组合账本和 AI 提供方尚未接入，因此页面显示这些组件“未配置”
-仍属于正常状态。BaoStock 同步默认完全离线，具体缓存和限流规则见
-[本地行情数据指南](data/README.md)。
+仓库已完成 Milestone 2：本地行情数据基础、RQAlpha 回测适配可行性验证，以及
+共享决策内核均已实现。当前内核包含前复权信号价与不复权执行价分离、版本化动量
+特征、volatility-scaled cross-sectional momentum、目标分配、确定性硬风险、执行
+计划和同管线历史 replay。实时行情、组合账本和 AI 提供方尚未接入。BaoStock 同步
+默认完全离线，具体缓存和限流规则见[本地行情数据指南](data/README.md)。
 
 ## 仓库结构
 
@@ -96,11 +97,15 @@ uv run uvicorn trading_codex.main:app \
 ```bash
 cd /home/radxa/quant/trading-codex
 
+PUBLIC_ORIGIN=https://trade.example.com \
 pnpm --dir web preview \
   --host 0.0.0.0 \
   --port 5555 \
   --strictPort
 ```
+
+将 `trade.example.com` 替换为实际使用的公网域名；变量只接受完整的 HTTP(S)
+origin。修改后必须重启 `vite preview`，Vite 才会重新加载精确 Host 白名单。
 
 `--strictPort` 会在 `5555` 已被占用时直接报错，避免 Vite 自动改用其他
 端口。当前 Vite 配置会让预览服务沿用 `/api` 代理，因此不需要把后端的
