@@ -1,53 +1,45 @@
-# ADR-0001: Shared Decision Core With Replaceable Execution Adapters
+# ADR-0001：使用共享决策核心与可替换的执行适配器
 
-- Status: Accepted
-- Date: 2026-08-07
-- Supersedes: None
-- Superseded by: None
+- 状态：Accepted
+- 日期：2026-08-07
+- 取代：无
+- 被取代：无
 
-## Context
+## 背景
 
-The system must use identical strategy semantics in historical replay and daily
-decisions while modeling A-share execution rules. Existing frameworks reduce
-accounting risk but can impose data formats, strategy APIs, runtime constraints,
-or licenses that should not control the rest of the application.
+系统既要对 A 股执行规则建模，也必须让历史 replay 与日常决策使用完全一致的
+策略语义。现有框架可以降低账务风险，但也可能强制使用特定数据格式、策略 API、
+运行时约束或许可证；这些因素不应控制应用的其他部分。
 
-The product is personal and single-user. Operational simplicity and auditability
-matter more than horizontal scaling.
+本产品供个人单用户使用。运行简单性和可审计性比横向扩展更重要。
 
-## Decision
+## 决策
 
-Build a local modular monolith around a framework-independent Python decision
-pipeline. Strategy, regime, allocation, and risk logic depend only on project
-domain contracts and a point-in-time market-data view.
+围绕一条与框架无关的 Python 决策管线构建本地模块化单体。策略、市场状态、
+分配和风险逻辑只依赖项目领域 contract 与时点市场数据视图。
 
-Use RQAlpha as the first execution-backtest adapter candidate. Confirm it with a
-bounded data and accounting spike before adoption. If it fails, implement only
-the narrow event simulator required for daily and 09:35 decisions behind the
-same adapter contract. Reserve Qlib for later research rather than transaction
-state or live decisions.
+将 RQAlpha 作为首个执行回测适配器候选。正式采用前，通过范围受限的数据与账务
+spike 验证。如果验证失败，只在同一 adapter contract 后实现日常和 09:35 决策
+所需的窄事件模拟器。Qlib 保留给后续研究，不用于事务状态或日常决策。
 
-## Rationale
+## 理由
 
-This keeps one authoritative decision path without accepting the cost and risk
-of writing a general-purpose backtest platform. It also confines external
-framework behavior to a testable boundary.
+该方案保留一条权威决策路径，同时避免承担编写通用回测平台的成本和风险，也将
+外部框架行为限制在可测试的边界内。
 
-## Alternatives Considered
+## 考虑过的方案
 
-- Write strategies directly against RQAlpha: rejected because live decisions
-  and framework replacement would duplicate or rewrite strategy logic.
-- Build a full custom backtester immediately: rejected because calendars,
-  accounting, corporate actions, and fills carry a high correctness burden.
-- Use microservices: rejected because a personal local application has no
-  concurrency requirement that justifies distributed operations.
-- Use Qlib as the application core: rejected because its research workflow does
-  not replace the manual-fill ledger and daily operational workspace.
+- 直接针对 RQAlpha 编写策略：拒绝，因为日常决策和框架替换会导致策略逻辑重复
+  或重写。
+- 立即构建完整的自定义回测器：拒绝，因为交易日历、账务、corporate action 和
+  成交处理具有很高的正确性负担。
+- 使用微服务：拒绝，因为个人本地应用没有足以证明分布式运行合理的并发需求。
+- 使用 Qlib 作为应用核心：拒绝，因为其研究工作流不能替代人工成交账本和日常
+  操作工作区。
 
-## Consequences
+## 后果
 
-- Domain contracts and causality tests must be defined before strategy growth.
-- The RQAlpha adapter may require substantial BaoStock normalization work.
-- Backtest execution and live manual execution remain different adapters but
-  produce the same order-intent and ledger contracts.
-- Framework-specific dependencies can run in a separate pinned environment.
+- 扩展策略前，必须先定义领域 contract 和因果性测试。
+- RQAlpha 适配器可能需要大量 BaoStock 规范化工作。
+- 回测执行和日常人工执行仍使用不同适配器，但生成相同的订单意图和账本 contract。
+- 框架专属依赖可以在单独的锁定环境中运行。

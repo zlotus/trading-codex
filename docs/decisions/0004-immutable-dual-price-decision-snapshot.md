@@ -1,9 +1,9 @@
 # ADR-0004: 使用不可变双价格快照驱动共享决策管线
 
-- Status: Accepted
-- Date: 2026-08-08
-- Supersedes: None
-- Superseded by: None
+- 状态：Accepted
+- 日期：2026-08-08
+- 取代：无
+- 被取代：无
 
 ## 背景
 

@@ -1,25 +1,21 @@
-# Repository Instructions
+# 仓库说明
 
-## Project Context
+## 项目上下文
 
-For non-trivial work or when resuming development, read `docs/context.md` and
-`docs/progress.md`, then only the task-relevant ADRs linked from
-`docs/decisions/README.md`. Read `docs/ideas.md` only during product planning.
+进行非简单工作或恢复开发时，先阅读 `docs/context.md` 和 `docs/progress.md`，
+再从 `docs/decisions/README.md` 中只选择与任务相关的 ADR 阅读。仅在产品规划
+期间阅读 `docs/ideas.md`。
 
-Treat repository instructions and external specifications as normative, code,
-tests, and configuration as the implemented behavior, accepted ADRs as durable
-rationale, and `docs/progress.md` as a current handoff snapshot. If these
-sources disagree, verify the behavior and update stale documentation when it is
-in scope.
+仓库说明和外部规范是约束性要求；代码、测试和配置描述已经实现的行为；已接受的
+ADR 保存长期有效的决策依据；`docs/progress.md` 是当前交接快照。如果这些来源
+相互冲突，应先验证实际行为，并在任务范围内更新过时文档。
 
-Keep `docs/context.md` stable and `docs/progress.md` concise. Record durable
-architecture, security, protocol, dependency, data, or product decisions as
-ADRs. Preserve accepted decisions; add a replacement ADR and mark the old one
-as superseded when a decision changes.
+保持 `docs/context.md` 稳定、`docs/progress.md` 简洁。长期有效的架构、安全、
+协议、依赖、数据或产品决策应记录为 ADR。保留已接受的历史决策；决策发生变化时，
+新增替代 ADR，并将旧 ADR 标记为已被取代。
 
-Do not update project-context documentation for routine edits, formatting,
-small isolated fixes, or unaccepted exploration. Record only checks actually
-run. Do not commit or push unless the user explicitly requests it.
+不要因例行编辑、格式调整、小型独立修复或尚未接受的探索而更新项目上下文文档。
+只记录实际运行过的检查。除非用户明确要求，否则不要提交或推送。
 
 ## 文档语言
 
@@ -27,16 +23,11 @@ run. Do not commit or push unless the user explicitly requests it.
 - 代码标识符、命令、API 字段、协议名称和必要的上游专有名词保留原文。
 - 现有英文文档在发生实质性修改时逐步翻译，避免仅为翻译产生大范围变动。
 
-## Engineering Rules
+## 工程规则
 
-- Keep strategy and allocation logic independent from backtest and live-data
-  frameworks.
-- Every market-data query used for a decision must enforce an explicit `as_of`
-  boundary.
-- AI output is a proposal. It cannot bypass deterministic risk checks or create
-  an executable fill.
-- Preserve the baseline, AI-adjusted, and manually executed portfolio tracks so
-  their effects remain attributable.
-- Fail closed when required data is stale, missing, or internally inconsistent.
-- Keep the application a local, single-user modular monolith unless an accepted
-  ADR changes that constraint.
+- 策略和分配逻辑必须独立于回测框架和实时数据框架。
+- 用于决策的每个市场数据查询都必须强制执行显式 `as_of` 边界。
+- AI 输出只是提案，不能绕过确定性风险检查，也不能创建可执行成交。
+- 保留基础组合、AI 调整组合和人工执行组合三条轨道，使各自影响可以归因。
+- 所需数据过期、缺失或内部不一致时，系统必须 fail closed。
+- 除非已接受的 ADR 改变此约束，否则应用必须保持为本地、单用户的模块化单体。

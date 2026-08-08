@@ -1,126 +1,120 @@
-# Implementation Plan
+# 实施计划
 
-The plan is ordered to validate data and accounting correctness before adding
-strategy complexity or AI authority.
+本计划先验证数据与账务正确性，再增加策略复杂度或扩大 AI 权限。
 
-## Milestone 0: Application Scaffold
+## Milestone 0：应用骨架
 
-Deliverables:
+### 交付物
 
-- Repository-owned context, ADRs, and acceptance-oriented plan.
-- Minimal FastAPI service with health and component-status endpoints.
-- Responsive React shell for the daily decision workspace and AI side panel.
-- Python package boundaries for data, strategy, regime, risk, backtest, AI, and
-  portfolio modules.
+- 仓库内维护的项目上下文、ADR 和面向验收的计划。
+- 提供健康检查和组件状态 endpoint 的最小 FastAPI 服务。
+- 面向日常决策工作区和 AI 侧边栏的响应式 React 外壳。
+- 数据、策略、市场状态、风险、回测、AI 和组合模块的 Python package 边界。
 
-Acceptance:
+### 验收标准
 
-- Backend tests and lint pass.
-- Frontend production build passes.
-- API and web development servers start locally.
+- 后端测试和 lint 通过。
+- 前端生产构建通过。
+- API 和 Web 开发服务器可以在本机启动。
 
-## Milestone 1: Data Foundation And Backtest Spike
+## Milestone 1：数据基础与回测可行性验证
 
-Deliverables:
+### 交付物
 
-- BaoStock instrument, calendar, daily-bar, adjustment, suspension, ST, and
-  historical-universe ingestion.
-- Immutable raw storage, normalized Parquet datasets, and data-quality reports.
-- Historical opening/5-minute coverage assessment for the 09:35 checkpoint.
-- RQAlpha adapter spike over 20 instruments and representative edge-case dates.
+- BaoStock 证券、交易日历、日线、复权、停牌、ST 和历史标的池数据采集。
+- 不可变 raw 存储、规范化 Parquet 数据集和数据质量报告。
+- 针对 09:35 决策点的历史开盘及 5 分钟数据覆盖评估。
+- 使用 20 个证券和代表性边界日期完成 RQAlpha 适配器 spike。
 
-Acceptance:
+### 验收标准
 
-- Incremental synchronization is idempotent.
-- Every normalized record has source and receive-time provenance.
-- Point-in-time tests reject future rows.
-- T+1, lot size, fees, suspension, limit-up/down, and one corporate-action case
-  match independently calculated fixtures.
-- A documented go/no-go decision selects RQAlpha or the narrow custom simulator.
+- 增量同步具备幂等性。
+- 每条规范化记录都保留来源和接收时间 provenance。
+- 时点测试拒绝 future row。
+- T+1、手数、费用、停牌、涨跌停和一个 corporate action 场景与独立计算的
+  fixture 一致。
+- 通过有文档记录的 go/no-go 决策选择 RQAlpha 或窄自定义模拟器。
 
-## Milestone 2: Shared Decision Kernel
+## Milestone 2：共享决策内核
 
-Deliverables:
+### 交付物
 
-- Versioned feature pipeline and end-of-day candidate shortlist.
-- First deterministic strategy: volatility-scaled cross-sectional momentum.
-- Target allocator, hard risk engine, and execution planner.
-- Historical replay using the same pipeline intended for live decisions.
+- 版本化特征管线和日终候选 shortlist。
+- 首个确定性策略：波动率缩放的横截面动量策略。
+- 目标分配器、硬风险引擎和执行 planner。
+- 使用日常决策同一管线的历史 replay。
 
-Acceptance:
+### 验收标准
 
-- Full-history and truncated-history causality checks produce identical signals
-  at sampled timestamps.
-- Replaying an unchanged decision snapshot produces the same base target.
-- No trade is proposed from stale data or against A-share execution constraints.
+- 完整历史和截断历史的因果性检查在抽样时间戳生成相同信号。
+- 重放未改变的决策快照时生成相同的基础目标组合。
+- 不得基于过期数据或违反 A 股执行约束提出交易。
 
-## Milestone 3: Ledger And Daily Vertical Slice
+## Milestone 3：账本与日常垂直切片
 
-Deliverables:
+### 交付物
 
-- Append-only signals, order intents, fills, cash movements, and position views.
-- Base, AI-shadow, and actual portfolio identifiers over the same ledger model.
-- End-of-day preparation and 09:35 decision jobs with retryable run records.
-- Working decision table, signal detail chart, fill entry, and reconciliation UI.
+- 仅追加的信号、订单意图、成交、现金变动和持仓视图。
+- 在同一账本模型上使用基础、AI-shadow 和实际组合标识。
+- 带可重试运行记录的日终准备任务和 09:35 决策任务。
+- 可用的决策表、信号详情图、成交录入和 reconciliation UI。
 
-Acceptance:
+### 验收标准
 
-- Partial fills, skipped signals, fees, and T+1 available quantities reconcile.
-- Accounting invariants hold after every ledger event.
-- A decision can be followed from source snapshot to actual fill or expiry.
+- 部分成交、跳过的信号、费用和 T+1 可用数量能够对账。
+- 每个账本事件发生后，账务不变量仍然成立。
+- 可以从来源快照一路追踪决策，直到实际成交或失效。
 
-## Milestone 4: Regime-Aware Strategy Pool
+## Milestone 4：市场状态感知策略池
 
-Deliverables:
+### 交付物
 
-- Interpretable market-regime probabilities from trend, volatility, breadth,
-  turnover, concentration, and opening-session features.
-- Momentum, short-horizon reversal, defensive low-volatility, and cash policies.
-- Bounded allocator with hysteresis, turnover limits, and emergency risk-off.
-- Walk-forward and regime-sliced evaluation reports.
+- 根据趋势、波动率、市场宽度、换手率、集中度和开盘时段特征生成可解释的
+  市场状态概率。
+- 动量、短周期反转、防御性低波动和现金策略。
+- 具备迟滞、换手限制和紧急 risk-off 的受约束分配器。
+- walk-forward 和按市场状态切片的评估报告。
 
-Acceptance:
+### 验收标准
 
-- Strategy changes occur only at configured checkpoints.
-- Regime and allocator versions are present in every decision run.
-- Performance is reported net of costs with parameter sensitivity, drawdown,
-  alpha/beta, block-bootstrap, and deflated-Sharpe evidence.
+- 只允许在已配置的决策点变更策略。
+- 每次决策运行都包含市场状态版本和分配器版本。
+- 以扣除成本后的结果报告表现，并提供参数敏感性、回撤、alpha/beta、
+  block bootstrap 和 Deflated Sharpe 证据。
 
-## Milestone 5: AI Research And Shadow Allocation
+## Milestone 5：AI 研究与影子分配
 
-Deliverables:
+### 交付物
 
-- Provider-neutral LLM client with structured output, prompt versions, budgets,
-  timeouts, caching, and audit records.
-- Offline research harness with physically isolated test data.
-- Daily AI proposal limited to approved strategy-weight deltas and risk
-  reduction; deterministic fallback is no change.
-- Structured AI summary, proposal, evidence, and dialogue views.
+- 与 provider 无关的 LLM 客户端，具备结构化输出、prompt 版本、预算、超时、
+  缓存和审计记录。
+- 使用物理隔离测试数据的离线研究工具。
+- 每日 AI 提案仅允许调整已批准的策略权重或降低风险；确定性 fallback 是不变更。
+- 结构化 AI 摘要、提案、证据和对话视图。
 
-Acceptance:
+### 验收标准
 
-- Invalid, late, unknown-strategy, or out-of-bound proposals are rejected.
-- AI has no direct write path to fills or risk configuration.
-- Base and AI-shadow results remain independently measurable.
+- 拒绝无效、迟到、引用未知策略或超出边界的提案。
+- AI 没有直接写入成交或风险配置的路径。
+- 基础组合和 AI-shadow 结果始终可以独立衡量。
 
-## Milestone 6: Forward Paper Operation
+## Milestone 6：前瞻模拟运行
 
-Deliverables:
+### 交付物
 
-- Scheduled daily operation, provider health, alerts, backup, and replay tools.
-- At least 60 trading days of base and AI-shadow observations.
-- Review report separating strategy, AI overlay, simulated execution, and manual
-  execution effects.
+- 定时日常运行、provider 健康检查、告警、备份和 replay 工具。
+- 至少 60 个交易日的基础组合和 AI-shadow 观察结果。
+- 分离策略、AI 叠加、模拟执行和人工执行影响的复盘报告。
 
-Acceptance:
+### 验收标准
 
-- Data outages and model outages fail closed without corrupting portfolio state.
-- Every observed discrepancy has a reproducible decision and ledger trail.
-- Any increase in AI authority requires a new accepted ADR.
+- 数据或模型中断时必须 fail closed，且不能破坏组合状态。
+- 每个观测到的差异都具备可重现的决策和账本轨迹。
+- 扩大任何 AI 权限都需要新增一个已接受的 ADR。
 
-## Deferred
+## 延后事项
 
-- Qlib machine-learning factor models.
-- News and filing ingestion for point-in-time AI context.
-- Paid market-data providers and automated broker gateways.
-- Intraday strategies below the 5-minute decision horizon.
+- Qlib 机器学习因子模型。
+- 为时点 AI 上下文采集新闻和公告。
+- 付费市场数据 provider 和自动化券商 gateway。
+- 决策周期短于 5 分钟的日内策略。

@@ -1,52 +1,41 @@
-# ADR-0002: Bound AI Authority And Preserve Attribution
+# ADR-0002：约束 AI 权限并保留归因
 
-- Status: Accepted
-- Date: 2026-08-07
-- Supersedes: None
-- Superseded by: None
+- 状态：Accepted
+- 日期：2026-08-07
+- 取代：无
+- 被取代：无
 
-## Context
+## 背景
 
-AI should help strategies respond to changing market conditions, but unconstrained
-prompt-driven trading is not reproducible and can turn recent performance into
-online overfitting. Manual execution also introduces a separate source of
-performance variation.
+AI 应帮助策略适应不断变化的市场环境，但不受约束、由 prompt 驱动的交易不可重现，
+还可能把近期表现转化为在线过拟合。人工执行也会引入另一种独立的表现差异。
 
-## Decision
+## 决策
 
-Use AI in three roles:
+AI 只承担三种角色：
 
-1. Offline strategy research against physically isolated train, validation, and
-   test data.
-2. Daily proposals for bounded weight changes among approved strategies and for
-   risk reduction.
-3. Structured explanation, challenge, and post-trade review.
+1. 使用物理隔离的训练、验证和测试数据开展离线策略研究。
+2. 每日针对已批准策略提出受约束的权重变更或风险降低建议。
+3. 提供结构化解释、质疑和交易后复盘。
 
-AI cannot create fills, enable an unapproved strategy, increase configured risk
-limits, or bypass the deterministic risk engine. Preserve three portfolio
-tracks: deterministic base simulation, AI-adjusted simulation, and the actual
-portfolio derived from manually recorded fills.
+AI 不能创建成交、启用未批准的策略、提高已配置的风险上限，也不能绕过确定性
+风险引擎。保留三条组合轨道：确定性基础模拟、AI 调整模拟，以及由人工记录成交
+推导出的实际组合。
 
-## Rationale
+## 理由
 
-The boundary permits flexible analysis while keeping orders deterministic,
-auditable, and attributable. Three portfolios distinguish strategy quality, AI
-overlay value, and human execution effects.
+这条边界允许灵活分析，同时保持订单确定、可审计、可归因。三条组合轨道可以
+区分策略质量、AI 叠加价值和人工执行的影响。
 
-## Alternatives Considered
+## 考虑过的方案
 
-- Let the model emit direct buy and sell orders: rejected because it is
-  stochastic, difficult to backtest, and can bypass portfolio constraints.
-- Use four-model majority voting: rejected because model agreement is not
-  independent market evidence and obscures responsibility.
-- Keep only the manually mirrored portfolio: rejected because skipped or delayed
-  trades would make strategy and execution performance inseparable.
+- 让模型直接生成买卖订单：拒绝，因为输出具有随机性、难以回测，并可能绕过
+  组合约束。
+- 使用四模型多数投票：拒绝，因为模型共识并非独立的市场证据，而且会模糊责任。
+- 只保留人工镜像组合：拒绝，因为跳过或延迟交易会使策略表现与执行表现无法分离。
 
-## Consequences
+## 后果
 
-- AI responses require strict schemas, bounds, versions, and immutable audit
-  records.
-- AI allocation begins in shadow mode and needs forward evidence before any
-  authority expansion.
-- The UI must display base intent, AI proposal, approved target, and actual fill
-  as distinct states.
+- AI 响应必须具备严格的 schema、边界、版本和不可变审计记录。
+- AI 分配从影子模式开始；扩大任何权限前，都必须获得前瞻运行证据。
+- UI 必须将基础意图、AI 提案、已批准目标和实际成交显示为不同状态。
