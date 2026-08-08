@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_HALF_EVEN, Context, Decimal, localcontext
 
 from trading_codex.domain.contracts import (
+    StrategyAllocation,
     StrategyProposal,
     TargetPortfolio,
     TargetWeight,
@@ -86,4 +87,8 @@ class TargetAllocator:
             version=self.version,
             weights=weights,
             cash_weight=Decimal(1) - gross,
+            active_strategy=proposal.strategy,
+            strategy_allocations=(
+                StrategyAllocation(strategy=proposal.strategy, weight=Decimal(1)),
+            ),
         )

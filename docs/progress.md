@@ -1,12 +1,12 @@
 # 项目进度
 
-最后审阅：2026-08-08
+最后审阅：2026-08-09
 
 ## 当前里程碑
 
-Milestone 3 已完成。append-only 账本、三轨组合投影、可重试日常 job、决策表、
-信号价格图、人工成交与 reconciliation 均达到实施计划中的验收线，下一步进入
-Milestone 4 的市场状态感知策略池。
+Milestone 4 进行中。市场状态 contract、四策略池、受约束分配器和 walk-forward
+评估器已完成实现与合成验收；由于本地真实日线没有前复权轨且历史长度不足，尚未形成
+真实 OOS 绩效证据，不能关闭该里程碑。
 
 ## 当前基线
 
@@ -26,13 +26,24 @@ Milestone 4 的市场状态感知策略池。
   配置和可重放的决策结果。
 - 本地 Parquet 快照源严格配对 BaoStock `adjustflag=2` 前复权信号价与
   `adjustflag=3` 不复权执行价；缺失、future 或不一致数据会 fail closed。
-- 首个版本化 feature/strategy pipeline 实现 volatility-scaled cross-sectional
-  momentum、正动量 shortlist、inverse-volatility 分配、最多 8 个持仓、单票 20%
-  和 gross exposure 95% 默认上限。
+- `DecisionSnapshot` v2 显式携带 `decision_point`、独立状态 universe、日线
+  `amount/turnover` 和精确 09:35 五分钟 bar；09:35 决策只读取前一完整交易日的日线，
+  风险与下单参考价使用当日 09:35 状态，全部输入受同一 `as_of` 和 provenance 约束。
+- 解释型状态管线根据趋势、波动率、宽度、换手、集中度和开盘收益生成 `risk_on`、
+  `mean_reverting`、`defensive`、`risk_off` 四种概率及可审计解释。
+- 策略池包含波动率缩放动量、短周期反转、防御性低波动和现金；分配器默认只在 09:35
+  切换 active strategy，使用 8% 迟滞、20% 单次换手上限和紧急 risk-off 覆盖层，同时
+  保留最多 8 个持仓、单票 20% 和 gross exposure 95% 硬边界。
+- 前序 `AllocationState` 是 decision hash 的显式输入；`HistoricalReplay` 顺序传递状态，
+  ledger 可按明确 `before` 边界恢复最近 M4 base/AI-shadow 分配，不使用隐藏进程状态。
+- walk-forward 评估器使用滚动训练窗和不重叠测试窗，统一报告扣费后表现、市场状态切片、
+  参数敏感性、最大回撤、alpha/beta、移动 block bootstrap 和 Deflated Sharpe。
 - 硬风险和 execution planner 覆盖 stale data、停牌、ST、涨跌停、T+1、整手、
   可卖数量、费用及现金约束；`HistoricalReplay` 直接调用相同 `DecisionPipeline`。
 - SQLite 事件账本仅允许追加 decision run、signal、order intent、fill、cash movement、
   signal disposition 和 job attempt；数据库 trigger 拒绝 `UPDATE` 与 `DELETE`。
+- ledger schema v2 单独记录 `regime_version` 与 `allocator_version`；v1 迁移只追加 legacy
+  标记列，不改写历史 decision payload。
 - base、AI-shadow 和 actual 使用同一事件 schema。人工 HTTP 写入只允许 actual track，
   所有人工写操作具备 idempotency key，冲突 payload 会 fail closed。
 - 现金与 position lot 按显式 `as_of` 重放；partial fill、费用、T+1、跳过剩余信号和
@@ -48,15 +59,17 @@ Milestone 4 的市场状态感知策略池。
 
 ## 进行中
 
-无。Milestone 4 尚未开始，也没有运行中的 BaoStock 获取任务。
+M4 的真实数据评估尚未完成。当前没有运行中的 BaoStock 获取任务；扩样仍必须人工、串行，
+遵守每进程最多一次上游请求的门禁。
 
 ## 下一步
 
-1. 定义版本化的市场状态 feature contract，并在每次查询中强制显式 `as_of`。
-2. 实现动量、短周期反转、防御性低波动和现金策略，以及带迟滞、换手限制和紧急
-   risk-off 的受约束分配器。
-3. 建立共享管线的 walk-forward 和市场状态切片评估，报告扣费后表现、回撤、
-   alpha/beta、block bootstrap 和 Deflated Sharpe。
+1. 设计并人工补齐足够长的 `adjustflag=2/3` 日线、历史 universe 和 09:35 状态样本；先
+   明确训练、验证、测试日期，不能为了已有结果回填测试区间。
+2. 用真实 replay 生成多组版本化参数的 `EvaluationPeriod`，产出并审阅首份扣费 OOS
+   报告；若覆盖、成交成本或统计证据不足，继续 fail closed。
+3. 报告通过后校准状态阈值、迟滞和换手上限；任何参数变化都提升配置版本并重跑完整
+   walk-forward，之后才能关闭 Milestone 4。
 
 ## 风险与限制
 
@@ -66,6 +79,9 @@ Milestone 4 的市场状态感知策略池。
   合成 RQAlpha fixture 验证，真实 provider 映射仍需独立样本。
 - 当前真实 normalized 日线尚未缓存 `adjustflag=2` 前复权轨，因此不能从该样本构建
   可执行决策快照。补样本必须显式 opt-in，且每次只处理一个 exact-query cache miss。
+- 2026-08-08 只读复核显示日线共 97 行、19 个标的且全部为 `adjustflag=3`；五分钟数据
+  共 4,656 行。该样本不满足 20 日双价格状态快照，更不满足默认 252/63 walk-forward
+  训练/测试窗，当前没有真实绩效结论。
 - 新账本默认从零现金开始，必须先通过 actual cash movement API 追加初始资金；目前
   Web 尚未提供现金变动表单。
 - 当前没有成交纠错 endpoint。发现错误 fill 时不能修改数据库，必须等待显式补偿事件
@@ -78,13 +94,17 @@ Milestone 4 的市场状态感知策略池。
 
 ## 验证
 
-- 2026-08-08：`.venv/bin/pytest` 通过，47 个测试；新增覆盖 partial fill、费用现金
-  事件、T+1、skip、负现金回滚、幂等冲突、append-only trigger、三轨 reconciliation、
-  point-in-time signal lifecycle、job retry 和账本 API。
-- 2026-08-08：`.venv/bin/ruff check .` 通过。
-- 2026-08-08：`pnpm --dir web build` 通过，Vite 6.4.3。
-- 2026-08-08：`UV_CACHE_DIR=/tmp/trading-codex-uv-cache uv lock --check` 通过，锁文件与
+- 2026-08-09：`.venv/bin/pytest` 通过，57 个测试；M4 新增覆盖精确 09:35 因果边界、
+  六类状态特征与概率、四策略池、迟滞、切换时点、换手封顶、紧急 risk-off、前序状态
+  恢复、ledger v1→v2 迁移，以及 walk-forward/状态切片/bootstrap/Deflated Sharpe。
+- 2026-08-09：`.venv/bin/ruff check .` 通过。
+- 2026-08-09：`pnpm --dir web build` 通过，Vite 6.4.3。
+- 2026-08-09：`UV_CACHE_DIR=/tmp/trading-codex-uv-cache uv lock --check` 通过，锁文件与
   项目依赖一致。
+- 2026-08-09：`git diff --check` 通过。
+- 2026-08-08：只读 `trading-codex-data quality` 通过；当前 instruments 8,885 行、
+  historical universe 39,557 行、日线 97 行、五分钟 4,656 行，缺少前复权日线、
+  adjustment factor 和 corporate action 数据。
 - 2026-08-08：Chromium 对带部分成交数据的今日决策和组合对账完成 1440×1000 与真实
   390×844 CSS viewport 检查；全页无横向溢出，决策宽表保留局部滚动。
 - 2026-08-08：RQAlpha spike 在 `aarch64`、Python 3.12.3、RQAlpha 6.3.0 下

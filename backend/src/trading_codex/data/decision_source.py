@@ -1,6 +1,6 @@
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -8,8 +8,10 @@ from trading_codex.data.parquet_store import ParquetDataStore
 from trading_codex.domain.models import (
     SHANGHAI,
     DailyBar,
+    DecisionPoint,
     DecisionSnapshot,
     InstrumentRule,
+    OpeningBar,
     PortfolioPosition,
     SnapshotValidationError,
     aware_utc,
@@ -17,6 +19,7 @@ from trading_codex.domain.models import (
 
 SIGNAL_ADJUSTMENT_FLAG = "2"
 EXECUTION_ADJUSTMENT_FLAG = "3"
+OPENING_CHECKPOINT = time(9, 35)
 
 
 class ParquetDecisionSnapshotSource:
@@ -34,8 +37,10 @@ class ParquetDecisionSnapshotSource:
         execution_deadline: datetime,
         cash: Decimal,
         candidate_codes: Iterable[str],
-        positions: Iterable[PortfolioPosition] = (),
+        regime_codes: Iterable[str],
         rules: Iterable[InstrumentRule],
+        positions: Iterable[PortfolioPosition] = (),
+        decision_point: DecisionPoint = DecisionPoint.EOD,
     ) -> DecisionSnapshot:
         boundary = aware_utc(as_of, field="as_of")
         if history_start > decision_date:
@@ -44,9 +49,16 @@ class ParquetDecisionSnapshotSource:
             raise SnapshotValidationError("decision_date exceeds as_of")
 
         candidates = tuple(sorted(set(candidate_codes)))
+        regime_universe = tuple(sorted(set(regime_codes)))
+        if not regime_universe:
+            raise SnapshotValidationError("regime universe must not be empty")
         position_items = _sorted_unique(positions, item_name="position")
         rule_items = _sorted_unique(rules, item_name="instrument rule")
-        required_codes = set(candidates) | {position.code for position in position_items}
+        required_codes = (
+            set(candidates)
+            | set(regime_universe)
+            | {position.code for position in position_items}
+        )
 
         calendar_rows = [
             row
@@ -65,6 +77,15 @@ class ParquetDecisionSnapshotSource:
         trading_days = {
             day for day, row in calendar_by_date.items() if row["is_trading_day"]
         }
+        prior_trading_days = sorted(day for day in trading_days if day < decision_date)
+        opening_previous_date = prior_trading_days[-1] if prior_trading_days else None
+        completed_daily_end = decision_date
+        if decision_point is DecisionPoint.OPENING_0935:
+            if not prior_trading_days:
+                raise SnapshotValidationError(
+                    "opening decision requires a completed prior trading day"
+                )
+            completed_daily_end = prior_trading_days[-1]
 
         universe_rows = [
             row
@@ -90,14 +111,14 @@ class ParquetDecisionSnapshotSource:
         signal_rows = self.store.daily_bars(
             codes=required_codes,
             start_date=history_start,
-            end_date=decision_date,
+            end_date=completed_daily_end,
             as_of=boundary,
             adjustment_flag=SIGNAL_ADJUSTMENT_FLAG,
         )
         execution_rows = self.store.daily_bars(
             codes=required_codes,
             start_date=history_start,
-            end_date=decision_date,
+            end_date=completed_daily_end,
             as_of=boundary,
             adjustment_flag=EXECUTION_ADJUSTMENT_FLAG,
         )
@@ -117,10 +138,11 @@ class ParquetDecisionSnapshotSource:
         expected_bar_keys = {
             (code, day)
             for day in trading_days
+            if day <= completed_daily_end
             for code, row in universe_by_date[day].items()
             if code in required_codes and row["trade_status"]
         }
-        expected_bar_keys.update((code, decision_date) for code in required_codes)
+        expected_bar_keys.update((code, completed_daily_end) for code in required_codes)
         missing_bars = sorted(expected_bar_keys - signal_keys)
         if missing_bars:
             raise SnapshotValidationError(
@@ -131,9 +153,45 @@ class ParquetDecisionSnapshotSource:
             self._daily_bar(signal_by_key[key], execution_by_key[key])
             for key in sorted(signal_keys)
         )
+        opening_rows = [
+            row
+            for row in self.store.five_minute_bars(
+                codes=required_codes,
+                start_date=decision_date,
+                end_date=decision_date,
+                as_of=boundary,
+                adjustment_flag=EXECUTION_ADJUSTMENT_FLAG,
+            )
+            if row["timestamp"].astimezone(SHANGHAI).time() == OPENING_CHECKPOINT
+        ]
+        if opening_rows and opening_previous_date is None:
+            raise SnapshotValidationError("opening bars require a prior daily close")
+        opening_previous_keys = {
+            (row["code"], opening_previous_date) for row in opening_rows
+        }
+        missing_opening_previous = sorted(opening_previous_keys - execution_keys)
+        if missing_opening_previous:
+            raise SnapshotValidationError(
+                "opening bars are missing prior daily closes: "
+                f"{_sample_keys(missing_opening_previous)}"
+            )
+        opening_bars = tuple(
+            self._opening_bar(
+                row,
+                universe=universe_by_date[decision_date][row["code"]],
+                previous=execution_by_key[(row["code"], opening_previous_date)],
+            )
+            for row in sorted(opening_rows, key=lambda row: (row["code"], row["timestamp"]))
+        )
         payloads = {
             row["source_payload_sha256"]
-            for row in [*calendar_rows, *universe_rows, *signal_rows, *execution_rows]
+            for row in [
+                *calendar_rows,
+                *universe_rows,
+                *signal_rows,
+                *execution_rows,
+                *opening_rows,
+            ]
         }
         return DecisionSnapshot(
             as_of=boundary,
@@ -145,6 +203,9 @@ class ParquetDecisionSnapshotSource:
             positions=position_items,
             rules=rule_items,
             source_payloads=tuple(sorted(payloads)),
+            decision_point=decision_point,
+            regime_codes=regime_universe,
+            opening_bars=opening_bars,
         )
 
     @staticmethod
@@ -167,6 +228,28 @@ class ParquetDecisionSnapshotSource:
             trade_status=execution["trade_status"],
             is_st=execution["is_st"],
             available_at=max(signal["available_at"], execution["available_at"]),
+            amount=execution["amount"],
+            turnover=execution["turnover"],
+        )
+
+    @staticmethod
+    def _opening_bar(
+        row: dict[str, Any],
+        *,
+        universe: dict[str, Any],
+        previous: dict[str, Any],
+    ) -> OpeningBar:
+        return OpeningBar(
+            code=row["code"],
+            timestamp=row["timestamp"],
+            open_price=row["open"],
+            close_price=row["close"],
+            previous_close=previous["close"],
+            volume=row["volume"],
+            amount=row["amount"],
+            trade_status=universe["trade_status"],
+            is_st="ST" in universe["name"].upper(),
+            available_at=row["available_at"],
         )
 
 

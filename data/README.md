@@ -13,6 +13,10 @@ data/
 artifact 路径。决策查询必须显式传入带时区的 `as_of`；执行价格只使用不复权行情，
 信号只使用前复权行情。决策快照按同一 `code/date` 严格配对 `adjustflag=2` 和
 `adjustflag=3`；任一轨缺失、晚于 `as_of` 或状态不一致都会 fail closed。
+市场状态另使用显式 `regime_codes`、不复权日线 `amount/turnover` 和决策日精确
+09:35 的五分钟 bar；09:35 决策的日线查询截止前一完整交易日。状态 universe 与候选
+shortlist 不得互相冒充，覆盖不足同样会 fail closed。BaoStock `turn` 按 provider 的
+百分数单位原样保存，不应再乘以 100。
 
 ## BaoStock 缓存和请求门禁
 

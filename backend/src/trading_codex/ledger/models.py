@@ -105,6 +105,8 @@ class SignalTrace:
     snapshot_id: str
     configuration_id: str
     pipeline_version: str
+    regime_version: str
+    allocator_version: str
     source_payloads: tuple[str, ...]
     recorded_at: datetime
 

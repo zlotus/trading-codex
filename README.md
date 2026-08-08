@@ -4,10 +4,11 @@ Trading Codex 是一个个人使用的 AI 辅助 A 股交易决策系统。它�
 `as_of` 时间边界约束的历史研究、开盘时段行情快照、可审计的策略配置、
 确定性风险控制，以及人工成交后的仓位同步整合到同一个工作区中。
 
-仓库已完成 Milestone 3：除本地行情数据、RQAlpha 回测适配和共享决策内核外，现已
-实现 append-only SQLite 事件账本、base/AI-shadow/actual 三轨组合视图、可重试日常
-job run、人工部分成交与跳过、T+1 账务重建和 reconciliation UI。实时行情和 AI
-提供方尚未接入。BaoStock 同步默认完全离线，具体缓存和限流规则见
+仓库正在实施 Milestone 4：已在共享决策内核中加入可解释市场状态概率、动量/短周期
+反转/防御性低波动/现金策略池、带迟滞和换手上限的分配器，以及 walk-forward 评估
+contract。append-only 账本、三轨组合视图和人工执行工作流保持不变。当前本地历史数据
+不足以形成真实绩效证据，因此 Milestone 4 尚未完成。实时行情和 AI 提供方也尚未接入。
+BaoStock 同步默认完全离线，具体缓存和限流规则见
 [本地行情数据指南](data/README.md)，账本边界见[组合账本操作指南](docs/ledger-operations.md)。
 
 ## 仓库结构

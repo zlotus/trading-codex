@@ -33,7 +33,7 @@ async def system_status() -> SystemStatusResponse:
                 key="decision_kernel",
                 label="决策内核",
                 state="ready",
-                detail="确定性动量策略、分配、硬风险和执行计划已接入共享管线。",
+                detail="市场状态、四策略池、受约束分配、硬风险和执行计划已接入共享管线。",
             ),
             ComponentStatus(
                 key="ledger",
@@ -51,7 +51,7 @@ async def system_status() -> SystemStatusResponse:
                 key="backtest",
                 label="回测引擎",
                 state="ready",
-                detail="共享历史 replay 与隔离的 RQAlpha 6.3.0 日频适配器已就绪。",
+                detail="共享 replay、walk-forward 评估与隔离的 RQAlpha 6.3.0 适配器已就绪。",
             ),
             ComponentStatus(
                 key="ai",

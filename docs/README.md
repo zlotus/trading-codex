@@ -6,6 +6,7 @@
 - [`implementation-plan.md`](implementation-plan.md)：分阶段实施计划和验收门槛。
 - [`progress.md`](progress.md)：简洁的当前状态和交接快照。
 - [`ledger-operations.md`](ledger-operations.md)：append-only 账本、人工成交和三轨对账操作。
+- [`regime-evaluation.md`](regime-evaluation.md)：市场状态、策略切换和 walk-forward 评估 contract。
 - [`decisions/`](decisions/README.md)：已接受的长期技术及产品决策，以及决策依据。
 - [`cloudflare-zero-trust-deployment.md`](cloudflare-zero-trust-deployment.md)：
   通过本机现有 Cloudflare Tunnel 和 Access 安全发布到互联网。

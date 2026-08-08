@@ -10,13 +10,14 @@ from trading_codex.domain.contracts import (
 )
 from trading_codex.domain.models import DailyBar, DecisionSnapshot
 
-FEATURE_VERSION = "momentum-volatility-features-v1"
+FEATURE_VERSION = "multi-strategy-price-features-v2"
 FEATURE_QUANTUM = Decimal("0.000000000001")
 
 
 @dataclass(frozen=True)
 class MomentumFeatureConfig:
     momentum_lookback: int = 20
+    short_term_lookback: int = 5
     volatility_lookback: int = 20
     annualization_days: int = 252
     candidate_count: int = 10
@@ -26,6 +27,8 @@ class MomentumFeatureConfig:
     def __post_init__(self) -> None:
         if self.momentum_lookback < 1:
             raise ValueError("momentum lookback must be positive")
+        if self.short_term_lookback < 1:
+            raise ValueError("short-term lookback must be positive")
         if self.volatility_lookback < 2:
             raise ValueError("volatility lookback must be at least two")
         if self.annualization_days < 1:
@@ -49,18 +52,20 @@ class MomentumFeaturePipeline:
         exclusions: list[FeatureExclusion] = []
         required = max(
             self.config.momentum_lookback,
+            self.config.short_term_lookback,
             self.config.volatility_lookback,
         ) + 1
 
         for code in snapshot.candidate_codes:
-            current = snapshot.state_on(code, snapshot.decision_date)
+            code_bars = snapshot.bars_for(code)
+            current = code_bars[-1] if code_bars else None
             reason = _current_exclusion(current)
             if reason is not None:
                 exclusions.append(FeatureExclusion(code=code, reason=reason))
                 continue
             priced = [
                 bar
-                for bar in snapshot.bars_for(code)
+                for bar in code_bars
                 if bar.trade_status and bar.signal_close is not None
             ]
             if len(priced) < required:
@@ -111,6 +116,9 @@ class MomentumFeaturePipeline:
     ) -> FeatureVector | None:
         with localcontext(Context(prec=28, rounding=ROUND_HALF_EVEN)):
             momentum = prices[-1] / prices[-self.config.momentum_lookback - 1] - 1
+            short_term_return = (
+                prices[-1] / prices[-self.config.short_term_lookback - 1] - 1
+            )
             volatility_prices = prices[-self.config.volatility_lookback - 1 :]
             returns = [
                 current / previous - 1
@@ -136,6 +144,7 @@ class MomentumFeaturePipeline:
                 momentum=_quantize(momentum),
                 annualized_volatility=quantized_volatility,
                 risk_adjusted_momentum=_quantize(score),
+                short_term_return=_quantize(short_term_return),
                 observations=len(prices),
             )
 

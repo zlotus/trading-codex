@@ -12,14 +12,19 @@ from trading_codex.domain.contracts import (
     DecisionRun,
     ExecutionPlan,
     FeatureSet,
+    MarketRegimeAssessment,
+    MarketRegimeLabel,
     OrderSide,
     PlannedOrder,
+    RegimeFeatureVector,
+    RegimeProbability,
     RiskDecision,
+    StrategyKind,
     StrategyProposal,
     TargetPortfolio,
 )
 from trading_codex.domain.hashing import canonical_sha256
-from trading_codex.domain.models import DailyBar, DecisionSnapshot, InstrumentRule
+from trading_codex.domain.models import DailyBar, DecisionPoint, DecisionSnapshot, InstrumentRule
 from trading_codex.ledger.jobs import RetryableDailyJobs
 from trading_codex.ledger.models import (
     CashMovementKind,
@@ -68,6 +73,7 @@ def _decision(
         positions=(),
         rules=(InstrumentRule(code=CODE, lot_size=100, price_limit_ratio=Decimal("0.10")),),
         source_payloads=(canonical_sha256({"fixture": key}),),
+        decision_point=DecisionPoint.EOD,
     )
     target = TargetPortfolio(
         snapshot_id=snapshot.snapshot_id,
@@ -91,6 +97,39 @@ def _decision(
         ),
         estimated_cash_after_orders=Decimal("17995"),
     )
+    regime = MarketRegimeAssessment(
+        snapshot_id=snapshot.snapshot_id,
+        as_of=as_of,
+        version="ledger-fixture-regime-v1",
+        features=RegimeFeatureVector(
+            trend_return=Decimal(0),
+            annualized_volatility=Decimal("0.20"),
+            breadth=Decimal("0.50"),
+            average_turnover=Decimal("0.02"),
+            concentration=Decimal("0.20"),
+            opening_return=Decimal(0),
+            universe_size=1,
+            daily_coverage=Decimal(1),
+            opening_coverage=Decimal(1),
+        ),
+        probabilities=tuple(
+            RegimeProbability(
+                label=label,
+                probability=Decimal("0.25"),
+                score=Decimal(1),
+            )
+            for label in MarketRegimeLabel
+        ),
+        selected=MarketRegimeLabel.RISK_ON,
+        emergency_risk_off=False,
+        explanations=("fixture",),
+    )
+    proposal = StrategyProposal(
+        snapshot_id=snapshot.snapshot_id,
+        strategy=StrategyKind.MOMENTUM,
+        version="ledger-fixture-strategy-v1",
+        intents=(),
+    )
     run = DecisionRun(
         decision_id="pending",
         snapshot_id=snapshot.snapshot_id,
@@ -104,11 +143,9 @@ def _decision(
             candidates=(),
             exclusions=(),
         ),
-        proposal=StrategyProposal(
-            snapshot_id=snapshot.snapshot_id,
-            version="ledger-fixture-strategy-v1",
-            intents=(),
-        ),
+        regime=regime,
+        strategy_proposals=(proposal,),
+        proposal=proposal,
         allocated=target,
         risk=RiskDecision(
             snapshot_id=snapshot.snapshot_id,
@@ -119,6 +156,8 @@ def _decision(
             rejections=(),
         ),
         execution=execution,
+        previous_allocation=None,
+        allocator_version=target.version,
     )
     run = replace(
         run,
@@ -127,10 +166,14 @@ def _decision(
                 "snapshot_id": snapshot.snapshot_id,
                 "configuration_id": run.configuration_id,
                 "features": run.features,
+                "regime": run.regime,
+                "strategy_proposals": run.strategy_proposals,
                 "proposal": run.proposal,
                 "allocated": run.allocated,
                 "risk": run.risk,
                 "execution": run.execution,
+                "previous_allocation": run.previous_allocation,
+                "allocator_version": run.allocator_version,
             }
         ),
     )
@@ -171,6 +214,74 @@ def test_decision_trace_rejects_forged_id_and_mixed_snapshot_stage(tmp_path: Pat
     )
     with pytest.raises(LedgerInvariantError, match="decision stage"):
         ledger.record_decision(snapshot, mixed)
+
+
+def test_ledger_migrates_v1_decision_trace_columns_without_rewriting_rows(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v1-ledger.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE decision_runs (
+                decision_id TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                configuration_id TEXT NOT NULL,
+                pipeline_version TEXT NOT NULL,
+                portfolio_track TEXT NOT NULL,
+                as_of TEXT NOT NULL,
+                decision_date TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                source_payloads_json TEXT NOT NULL,
+                decision_payload_json TEXT NOT NULL,
+                snapshot_payload_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            );
+            INSERT INTO decision_runs VALUES (
+                'legacy-decision', 'snapshot', 'configuration', 'pipeline-v1',
+                'base', '2024-01-01T00:00:00Z', '2024-01-01',
+                '2024-01-02T00:00:00Z', '[]', '{}', '{}',
+                '2024-01-01T00:00:00Z'
+            );
+            PRAGMA user_version = 1;
+            """
+        )
+
+    SQLiteLedger(path)
+
+    with sqlite3.connect(path) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        row = connection.execute(
+            "SELECT regime_version, allocator_version FROM decision_runs "
+            "WHERE decision_id = 'legacy-decision'"
+        ).fetchone()
+    assert version == 2
+    assert row == ("pre-milestone-4", "inverse-volatility-allocation-v1")
+
+
+def test_ledger_restores_only_prior_m4_allocation_state(tmp_path: Path) -> None:
+    ledger = SQLiteLedger(tmp_path / "ledger.db")
+    as_of = datetime(2024, 1, 2, 1, tzinfo=UTC)
+    snapshot, run = _decision(
+        as_of=as_of,
+        side=OrderSide.BUY,
+        quantity=100,
+        key="allocation-state",
+    )
+    ledger.record_decision(snapshot, run, recorded_at=as_of)
+
+    assert ledger.latest_allocation_state(before=as_of) is None
+    restored = ledger.latest_allocation_state(before=as_of + timedelta(seconds=1))
+    assert restored is not None
+    assert restored.as_of == as_of
+    assert restored.active_strategy is StrategyKind.MOMENTUM
+    assert restored.weights == run.allocated.weights
+    assert restored.cash_weight == run.allocated.cash_weight
+    with pytest.raises(LedgerInvariantError, match="actual track"):
+        ledger.latest_allocation_state(
+            before=as_of + timedelta(seconds=1),
+            portfolio_track=PortfolioTrack.ACTUAL,
+        )
 
 
 def test_partial_fills_fees_t1_and_three_track_reconciliation(tmp_path: Path) -> None:
@@ -284,6 +395,8 @@ def test_partial_fills_fees_t1_and_three_track_reconciliation(tmp_path: Path) ->
     trace = ledger.signal_detail(signal_id, as_of=buy_as_of).trace
     assert trace.snapshot_id == snapshot.snapshot_id
     assert trace.source_payloads == snapshot.source_payloads
+    assert trace.regime_version == run.regime.version
+    assert trace.allocator_version == run.allocator_version
 
     with sqlite3.connect(tmp_path / "ledger.db") as connection:
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
@@ -515,6 +628,8 @@ async def test_ledger_api_records_partial_fill_and_returns_trace(
     assert payload["signal"]["status"] == "partial"
     assert payload["signal"]["filled_quantity"] == 100
     assert payload["trace"]["snapshot_id"] == signal["snapshot_id"]
+    assert payload["trace"]["regime_version"] == "ledger-fixture-regime-v1"
+    assert payload["trace"]["allocator_version"] == "ledger-fixture-target-v1"
     assert payload["price_points"]
 
     replay = await ledger_client.post(

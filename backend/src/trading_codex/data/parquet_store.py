@@ -112,6 +112,29 @@ class ParquetDataStore:
             and row["adjustment_flag"] == adjustment_flag
         ]
 
+    def five_minute_bars(
+        self,
+        *,
+        codes: Iterable[str],
+        start_date: date,
+        end_date: date,
+        as_of: datetime,
+        adjustment_flag: str = "3",
+    ) -> list[dict[str, Any]]:
+        boundary = require_aware(as_of, field="as_of")
+        if end_date < start_date:
+            raise ValueError("end_date must not precede start_date")
+        if end_date > boundary.astimezone(SHANGHAI).date():
+            raise FutureDataError("five-minute-bar end_date exceeds as_of")
+        code_set = set(codes)
+        return [
+            row
+            for row in self.rows_as_of("five_minute_bars", as_of=boundary)
+            if row["code"] in code_set
+            and start_date <= row["trade_date"] <= end_date
+            and row["adjustment_flag"] == adjustment_flag
+        ]
+
     @staticmethod
     def _key(row: dict[str, Any], spec: DatasetSpec) -> tuple[Any, ...]:
         return tuple(row[column] for column in spec.keys)

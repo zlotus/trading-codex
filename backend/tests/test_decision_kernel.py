@@ -9,8 +9,10 @@ from trading_codex.domain.contracts import TargetPortfolio, TargetWeight
 from trading_codex.domain.hashing import canonical_sha256
 from trading_codex.domain.models import (
     DailyBar,
+    DecisionPoint,
     DecisionSnapshot,
     InstrumentRule,
+    OpeningBar,
     PortfolioPosition,
     RiskValidationError,
     SnapshotValidationError,
@@ -48,16 +50,23 @@ def _trending_snapshot(*, start_index: int, end_index: int) -> DecisionSnapshot:
                     trade_status=True,
                     is_st=False,
                     available_at=datetime(day.year, day.month, day.day, 7, tzinfo=UTC),
+                    amount=signal * Decimal(100_000),
+                    turnover=Decimal("0.02") + Decimal(code_index) / Decimal(10_000),
                 )
             )
             previous_execution = execution
-    decision_date = start + timedelta(days=end_index)
+    history_end = start + timedelta(days=end_index)
+    decision_date = history_end + timedelta(days=1)
+    previous_by_code = {
+        bar.code: bar.execution_close for bar in bars if bar.trade_date == history_end
+    }
     return DecisionSnapshot(
         as_of=datetime(
             decision_date.year,
             decision_date.month,
             decision_date.day,
-            8,
+            1,
+            35,
             tzinfo=UTC,
         ),
         decision_date=decision_date,
@@ -67,8 +76,7 @@ def _trending_snapshot(*, start_index: int, end_index: int) -> DecisionSnapshot:
             decision_date.day,
             8,
             tzinfo=UTC,
-        )
-        + timedelta(days=1),
+        ),
         cash=Decimal("1000000"),
         candidate_codes=codes,
         bars=tuple(sorted(bars, key=lambda bar: (bar.code, bar.trade_date))),
@@ -78,6 +86,37 @@ def _trending_snapshot(*, start_index: int, end_index: int) -> DecisionSnapshot:
             for code in codes
         ),
         source_payloads=(canonical_sha256({"start": start_index, "end": end_index}),),
+        decision_point=DecisionPoint.OPENING_0935,
+        regime_codes=codes,
+        opening_bars=tuple(
+            OpeningBar(
+                code=code,
+                timestamp=datetime(
+                    decision_date.year,
+                    decision_date.month,
+                    decision_date.day,
+                    1,
+                    35,
+                    tzinfo=UTC,
+                ),
+                open_price=Decimal(10 + code_index),
+                close_price=Decimal(10 + code_index) * Decimal("1.005"),
+                previous_close=previous_by_code[code],
+                volume=10_000,
+                amount=Decimal(100_000 + code_index * 1_000),
+                trade_status=True,
+                is_st=False,
+                available_at=datetime(
+                    decision_date.year,
+                    decision_date.month,
+                    decision_date.day,
+                    1,
+                    35,
+                    tzinfo=UTC,
+                ),
+            )
+            for code_index, code in enumerate(codes)
+        ),
     )
 
 
@@ -124,8 +163,7 @@ def test_replay_identity_does_not_depend_on_process_decimal_context() -> None:
 
 def test_snapshot_rejects_future_rows_and_pipeline_rejects_stale_data() -> None:
     snapshot = _trending_snapshot(start_index=10, end_index=30)
-    current = snapshot.state_on(snapshot.candidate_codes[0], snapshot.decision_date)
-    assert current is not None
+    current = snapshot.bars_for(snapshot.candidate_codes[0])[-1]
     future = replace(current, available_at=snapshot.as_of + timedelta(seconds=1))
     bars = tuple(future if bar == current else bar for bar in snapshot.bars)
 
@@ -192,6 +230,7 @@ def _constraint_snapshot() -> DecisionSnapshot:
             for code in specs
         ),
         source_payloads=(PAYLOAD,),
+        decision_point=DecisionPoint.EOD,
     )
 
 
@@ -247,6 +286,7 @@ def test_execution_planner_reserves_fees_before_buying() -> None:
         positions=(),
         rules=(InstrumentRule(code=code, lot_size=100, price_limit_ratio=Decimal("0.10")),),
         source_payloads=(PAYLOAD,),
+        decision_point=DecisionPoint.EOD,
     )
     target = TargetPortfolio(
         snapshot_id=snapshot.snapshot_id,
@@ -298,6 +338,7 @@ def test_execution_planner_fails_closed_when_sell_fees_exceed_cash_and_proceeds(
         ),
         rules=(InstrumentRule(code=code, lot_size=100, price_limit_ratio=Decimal("0.10")),),
         source_payloads=(PAYLOAD,),
+        decision_point=DecisionPoint.EOD,
     )
     target = TargetPortfolio(
         snapshot_id=snapshot.snapshot_id,

@@ -63,7 +63,7 @@ class ExecutionPlanner:
                 code,
                 TargetWeight(code=code, weight=Decimal(0), rank=10_000),
             )
-            state = snapshot.state_on(code, snapshot.decision_date)
+            state = snapshot.decision_state(code)
             if not _tradable(state):
                 continue
             assert state is not None and state.execution_close is not None

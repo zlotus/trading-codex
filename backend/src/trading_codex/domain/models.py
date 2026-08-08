@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 from trading_codex.domain.hashing import canonical_sha256
@@ -24,6 +25,11 @@ class RiskValidationError(DecisionKernelError):
     """A target portfolio violates a deterministic hard-risk invariant."""
 
 
+class DecisionPoint(StrEnum):
+    EOD = "eod"
+    OPENING_0935 = "opening_0935"
+
+
 def aware_utc(value: datetime, *, field: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise SnapshotValidationError(f"{field} must be timezone-aware")
@@ -41,6 +47,8 @@ class DailyBar:
     trade_status: bool
     is_st: bool
     available_at: datetime
+    amount: Decimal | None = None
+    turnover: Decimal | None = None
 
     def __post_init__(self) -> None:
         _validate_code(self.code)
@@ -49,6 +57,10 @@ class DailyBar:
         )
         if self.volume < 0:
             raise SnapshotValidationError("bar volume must be non-negative")
+        if self.amount is not None and self.amount < 0:
+            raise SnapshotValidationError("bar amount must be non-negative")
+        if self.turnover is not None and self.turnover < 0:
+            raise SnapshotValidationError("bar turnover must be non-negative")
         for field in ("signal_close", "execution_close", "previous_close"):
             value = getattr(self, field)
             if value is not None and value <= 0:
@@ -58,6 +70,35 @@ class DailyBar:
             for value in (self.signal_close, self.execution_close, self.previous_close)
         ):
             raise SnapshotValidationError("tradable bars require signal and execution prices")
+
+
+@dataclass(frozen=True)
+class OpeningBar:
+    code: str
+    timestamp: datetime
+    open_price: Decimal
+    close_price: Decimal
+    previous_close: Decimal
+    volume: int
+    amount: Decimal
+    trade_status: bool
+    is_st: bool
+    available_at: datetime
+
+    def __post_init__(self) -> None:
+        _validate_code(self.code)
+        object.__setattr__(self, "timestamp", aware_utc(self.timestamp, field="opening.timestamp"))
+        object.__setattr__(
+            self,
+            "available_at",
+            aware_utc(self.available_at, field="opening.available_at"),
+        )
+        if self.open_price <= 0 or self.close_price <= 0 or self.previous_close <= 0:
+            raise SnapshotValidationError("opening prices must be positive")
+        if self.volume < 0 or self.amount < 0:
+            raise SnapshotValidationError("opening volume and amount must be non-negative")
+        if self.available_at < self.timestamp:
+            raise SnapshotValidationError("opening bar cannot be available before its timestamp")
 
 
 @dataclass(frozen=True)
@@ -102,7 +143,10 @@ class DecisionSnapshot:
     positions: tuple[PortfolioPosition, ...]
     rules: tuple[InstrumentRule, ...]
     source_payloads: tuple[str, ...]
-    data_version: str = "decision-snapshot-v1"
+    decision_point: DecisionPoint
+    regime_codes: tuple[str, ...] = ()
+    opening_bars: tuple[OpeningBar, ...] = ()
+    data_version: str = "decision-snapshot-v2"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "as_of", aware_utc(self.as_of, field="as_of"))
@@ -117,6 +161,8 @@ class DecisionSnapshot:
             raise SnapshotValidationError("decision date exceeds as_of")
         if self.cash < 0:
             raise SnapshotValidationError("cash must be non-negative")
+        if not isinstance(self.decision_point, DecisionPoint):
+            raise SnapshotValidationError("decision point is invalid")
         if not self.data_version:
             raise SnapshotValidationError("data version is required")
         self._validate_sorted_unique()
@@ -132,6 +178,42 @@ class DecisionSnapshot:
                 raise SnapshotValidationError("snapshot contains a future trade date")
             if bar.available_at > self.as_of:
                 raise SnapshotValidationError("snapshot contains a bar unavailable at as_of")
+        for bar in self.opening_bars:
+            opening_time = bar.timestamp.astimezone(SHANGHAI)
+            if opening_time.date() != self.decision_date:
+                raise SnapshotValidationError("opening bar belongs to a different decision date")
+            if (
+                opening_time.hour,
+                opening_time.minute,
+                opening_time.second,
+                opening_time.microsecond,
+            ) != (9, 35, 0, 0):
+                raise SnapshotValidationError("opening bar must use the exact 09:35 checkpoint")
+            if bar.available_at > self.as_of:
+                raise SnapshotValidationError(
+                    "snapshot contains an opening bar unavailable at as_of"
+                )
+            opening_codes = (
+                set(self.regime_codes)
+                | set(self.candidate_codes)
+                | {position.code for position in self.positions}
+            )
+            if bar.code not in opening_codes:
+                raise SnapshotValidationError("opening bar is outside the decision universe")
+            prior = next(
+                (
+                    daily
+                    for daily in reversed(self.bars)
+                    if daily.code == bar.code
+                    and daily.trade_date < self.decision_date
+                    and daily.execution_close is not None
+                ),
+                None,
+            )
+            if prior is None or prior.execution_close != bar.previous_close:
+                raise SnapshotValidationError(
+                    "opening previous close disagrees with completed daily data"
+                )
 
     @property
     def snapshot_id(self) -> str:
@@ -147,6 +229,9 @@ class DecisionSnapshot:
         )
 
     def latest_priced_bar(self, code: str) -> DailyBar | None:
+        current = self.decision_state(code)
+        if current is not None and current.execution_close is not None:
+            return current
         return next(
             (
                 bar
@@ -156,8 +241,43 @@ class DecisionSnapshot:
             None,
         )
 
+    def decision_state(self, code: str) -> DailyBar | None:
+        current = self.state_on(code, self.decision_date)
+        if current is not None:
+            return current
+        opening = self.opening_bar_for(code)
+        if opening is None:
+            return None
+        prior = next(
+            (
+                bar
+                for bar in reversed(self.bars)
+                if bar.code == code
+                and bar.trade_date < self.decision_date
+                and bar.signal_close is not None
+            ),
+            None,
+        )
+        if prior is None:
+            return None
+        return DailyBar(
+            code=code,
+            trade_date=self.decision_date,
+            signal_close=prior.signal_close,
+            execution_close=opening.close_price,
+            previous_close=opening.previous_close,
+            volume=opening.volume,
+            trade_status=opening.trade_status,
+            is_st=opening.is_st,
+            available_at=opening.available_at,
+            amount=opening.amount,
+        )
+
     def position_for(self, code: str) -> PortfolioPosition | None:
         return next((position for position in self.positions if position.code == code), None)
+
+    def opening_bar_for(self, code: str) -> OpeningBar | None:
+        return next((bar for bar in self.opening_bars if bar.code == code), None)
 
     def rule_for(self, code: str) -> InstrumentRule:
         rule = next((item for item in self.rules if item.code == code), None)
@@ -180,6 +300,18 @@ class DecisionSnapshot:
             raise SnapshotValidationError("rules must be sorted and unique")
         if self.source_payloads != tuple(sorted(set(self.source_payloads))):
             raise SnapshotValidationError("source payload hashes must be sorted and unique")
+        regime_codes = tuple(sorted(set(self.regime_codes)))
+        if self.regime_codes != regime_codes:
+            raise SnapshotValidationError("regime codes must be sorted and unique")
+        bar_codes = {bar.code for bar in self.bars}
+        if not set(self.regime_codes) <= bar_codes:
+            missing = sorted(set(self.regime_codes) - bar_codes)
+            raise SnapshotValidationError(f"regime universe is missing daily bars: {missing}")
+        opening_keys = tuple((bar.code, bar.timestamp) for bar in self.opening_bars)
+        if opening_keys != tuple(sorted(set(opening_keys))):
+            raise SnapshotValidationError(
+                "opening bars must be sorted with unique code/timestamp keys"
+            )
         if not self.source_payloads:
             raise SnapshotValidationError("at least one source payload hash is required")
         if any(

@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from trading_codex.domain.contracts import DecisionRun
+from trading_codex.domain.contracts import (
+    AllocationState,
+    DecisionRun,
+    StrategyKind,
+    TargetWeight,
+)
 from trading_codex.domain.hashing import canonical_sha256
 from trading_codex.domain.models import DecisionSnapshot
 from trading_codex.ledger.models import (
@@ -77,6 +82,8 @@ class SQLiteLedger:
             raise LedgerInvariantError("decision run belongs to a different snapshot")
         stage_snapshot_ids = (
             run.features.snapshot_id,
+            run.regime.snapshot_id,
+            *(proposal.snapshot_id for proposal in run.strategy_proposals),
             run.proposal.snapshot_id,
             run.allocated.snapshot_id,
             run.risk.snapshot_id,
@@ -87,6 +94,19 @@ class SQLiteLedger:
             raise LedgerInvariantError("decision stage belongs to a different snapshot")
         if run.features.as_of != snapshot.as_of:
             raise LedgerInvariantError("feature set uses a different as_of")
+        if run.regime.as_of != snapshot.as_of:
+            raise LedgerInvariantError("regime assessment uses a different as_of")
+        if (
+            run.previous_allocation is not None
+            and run.previous_allocation.as_of >= snapshot.as_of
+        ):
+            raise LedgerInvariantError("previous allocation must precede decision as_of")
+        if run.proposal not in run.strategy_proposals:
+            raise LedgerInvariantError("selected proposal is outside the strategy pool")
+        if run.proposal.strategy is not run.allocated.active_strategy:
+            raise LedgerInvariantError("selected proposal disagrees with active strategy")
+        if run.allocator_version != run.allocated.version:
+            raise LedgerInvariantError("allocator version disagrees with allocated target")
         if run.risk.requested != run.allocated:
             raise LedgerInvariantError("risk decision does not reference allocated target")
         expected_decision_id = canonical_sha256(
@@ -94,10 +114,14 @@ class SQLiteLedger:
                 "snapshot_id": snapshot.snapshot_id,
                 "configuration_id": run.configuration_id,
                 "features": run.features,
+                "regime": run.regime,
+                "strategy_proposals": run.strategy_proposals,
                 "proposal": run.proposal,
                 "allocated": run.allocated,
                 "risk": run.risk,
                 "execution": run.execution,
+                "previous_allocation": run.previous_allocation,
+                "allocator_version": run.allocator_version,
             }
         )
         if run.decision_id != expected_decision_id:
@@ -129,16 +153,19 @@ class SQLiteLedger:
                     """
                     INSERT INTO decision_runs (
                         decision_id, snapshot_id, configuration_id, pipeline_version,
+                        regime_version, allocator_version,
                         portfolio_track, as_of, decision_date, expires_at,
                         source_payloads_json, decision_payload_json, snapshot_payload_json,
                         recorded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run.decision_id,
                         run.snapshot_id,
                         run.configuration_id,
                         run.pipeline_version,
+                        run.regime.version,
+                        run.allocator_version,
                         portfolio_track.value,
                         _datetime_text(snapshot.as_of),
                         snapshot.decision_date.isoformat(),
@@ -228,6 +255,55 @@ class SQLiteLedger:
                     ),
                 )
             return tuple(signal_ids)
+
+    def latest_allocation_state(
+        self,
+        *,
+        before: datetime,
+        portfolio_track: PortfolioTrack = PortfolioTrack.BASE,
+    ) -> AllocationState | None:
+        if portfolio_track is PortfolioTrack.ACTUAL:
+            raise LedgerInvariantError("actual track has no automated allocation state")
+        boundary = as_utc(before, field="before")
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT as_of, decision_payload_json
+                FROM decision_runs
+                WHERE portfolio_track = ?
+                    AND as_of < ?
+                    AND recorded_at <= ?
+                    AND regime_version != 'pre-milestone-4'
+                ORDER BY as_of DESC, recorded_at DESC
+                LIMIT 1
+                """,
+                (
+                    portfolio_track.value,
+                    _datetime_text(boundary),
+                    _datetime_text(boundary),
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["decision_payload_json"])
+            allocated = payload["allocated"]
+            weights = tuple(
+                TargetWeight(
+                    code=item["code"],
+                    weight=Decimal(item["weight"]),
+                    rank=int(item["rank"]),
+                )
+                for item in allocated["weights"]
+            )
+            return AllocationState(
+                as_of=_parse_datetime(row["as_of"]),
+                active_strategy=StrategyKind(allocated["active_strategy"]),
+                weights=weights,
+                cash_weight=Decimal(allocated["cash_weight"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LedgerInvariantError("stored decision has invalid allocation state") from exc
 
     def record_cash_movement(
         self,
@@ -607,6 +683,8 @@ class SQLiteLedger:
                     snapshot_id=decision["snapshot_id"],
                     configuration_id=decision["configuration_id"],
                     pipeline_version=decision["pipeline_version"],
+                    regime_version=decision["regime_version"],
+                    allocator_version=decision["allocator_version"],
                     source_payloads=tuple(json.loads(decision["source_payloads_json"])),
                     recorded_at=_parse_datetime(decision["recorded_at"]),
                 ),
@@ -762,7 +840,7 @@ class SQLiteLedger:
     def _initialize(self) -> None:
         with self._connect() as connection:
             schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if schema_version not in (0, 1):
+            if schema_version not in (0, 1, 2):
                 raise LedgerInvariantError(
                     f"unsupported ledger schema version: {schema_version}"
                 )
@@ -775,6 +853,8 @@ class SQLiteLedger:
                     snapshot_id TEXT NOT NULL,
                     configuration_id TEXT NOT NULL,
                     pipeline_version TEXT NOT NULL,
+                    regime_version TEXT NOT NULL,
+                    allocator_version TEXT NOT NULL,
                     portfolio_track TEXT NOT NULL CHECK (
                         portfolio_track IN ('base', 'ai_shadow')
                     ),
@@ -904,6 +984,15 @@ class SQLiteLedger:
                     ON job_attempt_events(run_id, occurred_at);
                 """
             )
+            if schema_version == 1:
+                connection.execute(
+                    "ALTER TABLE decision_runs ADD COLUMN regime_version "
+                    "TEXT NOT NULL DEFAULT 'pre-milestone-4'"
+                )
+                connection.execute(
+                    "ALTER TABLE decision_runs ADD COLUMN allocator_version "
+                    "TEXT NOT NULL DEFAULT 'inverse-volatility-allocation-v1'"
+                )
             for table in self._APPEND_ONLY_TABLES:
                 connection.execute(
                     f"""
@@ -923,8 +1012,8 @@ class SQLiteLedger:
                     END
                     """
                 )
-            if schema_version == 0:
-                connection.execute("PRAGMA user_version = 1")
+            if schema_version < 2:
+                connection.execute("PRAGMA user_version = 2")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

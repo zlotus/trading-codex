@@ -7,7 +7,7 @@ import pytest
 from trading_codex.data.decision_source import ParquetDecisionSnapshotSource
 from trading_codex.data.parquet_store import ParquetDataStore
 from trading_codex.domain.hashing import canonical_sha256
-from trading_codex.domain.models import InstrumentRule, SnapshotValidationError
+from trading_codex.domain.models import DecisionPoint, InstrumentRule, SnapshotValidationError
 
 CODE = "sh.600000"
 
@@ -80,6 +80,25 @@ def _daily_row(
     }
 
 
+def _opening_row(day: date) -> dict[str, object]:
+    timestamp = datetime(day.year, day.month, day.day, 1, 35, tzinfo=UTC)
+    payload = canonical_sha256({"dataset": "five-minute", "day": day})
+    return {
+        "timestamp": timestamp,
+        "trade_date": day,
+        "code": CODE,
+        "open": Decimal("20"),
+        "high": Decimal("20.20"),
+        "low": Decimal("19.90"),
+        "close": Decimal("20.10"),
+        "volume": 10_000,
+        "amount": Decimal("200500"),
+        "adjustment_flag": "3",
+        **_provenance(day, payload=payload, available_hour=1),
+        "available_at": timestamp,
+    }
+
+
 def _source(tmp_path: Path) -> tuple[ParquetDataStore, ParquetDecisionSnapshotSource]:
     store = ParquetDataStore(tmp_path / "normalized")
     return store, ParquetDecisionSnapshotSource(store)
@@ -93,6 +112,7 @@ def _build(source: ParquetDecisionSnapshotSource, days: tuple[date, ...]):
         execution_deadline=datetime(2024, 1, 5, 1, 35, tzinfo=UTC),
         cash=Decimal("100000"),
         candidate_codes=(CODE,),
+        regime_codes=(CODE,),
         rules=(
             InstrumentRule(
                 code=CODE,
@@ -115,6 +135,7 @@ def test_snapshot_source_pairs_signal_and_execution_prices(tmp_path: Path) -> No
             for flag, offset in (("2", 0), ("3", 10))
         ),
     )
+    store.merge("five_minute_bars", (_opening_row(days[-1]),))
 
     snapshot = _build(source, days)
 
@@ -123,8 +144,51 @@ def test_snapshot_source_pairs_signal_and_execution_prices(tmp_path: Path) -> No
     assert current.signal_close == Decimal("12")
     assert current.execution_close == Decimal("22")
     assert current.previous_close == Decimal("21.90")
+    assert current.amount == Decimal("2200000.0000")
+    assert current.turnover == Decimal("0.01000000")
+    assert snapshot.opening_bars[0].close_price == Decimal("20.100000")
     assert snapshot.snapshot_id == snapshot.snapshot_id
-    assert len(snapshot.source_payloads) == 8
+    assert len(snapshot.source_payloads) == 9
+
+
+def test_opening_snapshot_uses_prior_daily_rows_and_current_0935_bar(
+    tmp_path: Path,
+) -> None:
+    store, source = _source(tmp_path)
+    days = (date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4))
+    _populate_prerequisites(store, days)
+    store.merge(
+        "daily_bars",
+        (
+            _daily_row(day, adjustment_flag=flag, close=Decimal(index + offset))
+            for index, day in enumerate(days, start=10)
+            for flag, offset in (("2", 0), ("3", 10))
+        ),
+    )
+    store.merge("five_minute_bars", (_opening_row(days[-1]),))
+    as_of = datetime(2024, 1, 4, 1, 35, tzinfo=UTC)
+
+    snapshot = source.build(
+        as_of=as_of,
+        history_start=days[0],
+        decision_date=days[-1],
+        execution_deadline=datetime(2024, 1, 4, 8, tzinfo=UTC),
+        cash=Decimal("100000"),
+        candidate_codes=(CODE,),
+        regime_codes=(CODE,),
+        rules=(
+            InstrumentRule(code=CODE, lot_size=100, price_limit_ratio=Decimal("0.10")),
+        ),
+        decision_point=DecisionPoint.OPENING_0935,
+    )
+
+    assert max(bar.trade_date for bar in snapshot.bars) == days[-2]
+    assert snapshot.state_on(CODE, days[-1]) is None
+    current = snapshot.decision_state(CODE)
+    assert current is not None
+    assert current.execution_close == Decimal("20.100000")
+    assert current.previous_close == Decimal("21.000000")
+    assert current.available_at == as_of
 
 
 def test_snapshot_source_fails_when_either_price_track_is_missing(tmp_path: Path) -> None:

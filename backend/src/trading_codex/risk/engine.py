@@ -52,7 +52,7 @@ class HardRiskEngine:
 
     def validate_snapshot(self, snapshot: DecisionSnapshot) -> None:
         for code in snapshot.candidate_codes:
-            current = snapshot.state_on(code, snapshot.decision_date)
+            current = snapshot.decision_state(code)
             if current is None:
                 raise SnapshotValidationError(
                     f"candidate {code} is missing its decision-date market state"
@@ -147,7 +147,7 @@ class HardRiskEngine:
             raise RiskValidationError("target cash weight is internally inconsistent")
 
     def _buy_blocker(self, snapshot: DecisionSnapshot, code: str) -> str | None:
-        state = snapshot.state_on(code, snapshot.decision_date)
+        state = snapshot.decision_state(code)
         if state is None or not state.trade_status or state.volume <= 0:
             return "suspended"
         if state.is_st and not self.config.allow_st_buys:
@@ -158,7 +158,7 @@ class HardRiskEngine:
         return None
 
     def _sell_blocker(self, snapshot: DecisionSnapshot, code: str) -> str | None:
-        state = snapshot.state_on(code, snapshot.decision_date)
+        state = snapshot.decision_state(code)
         if state is None or not state.trade_status or state.volume <= 0:
             return "suspended"
         ratio = Decimal("0.05") if state.is_st else snapshot.rule_for(code).price_limit_ratio

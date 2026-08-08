@@ -3,6 +3,7 @@ from decimal import ROUND_HALF_EVEN, Context, localcontext
 from trading_codex.domain.contracts import (
     FeatureSet,
     StrategyIntent,
+    StrategyKind,
     StrategyProposal,
 )
 
@@ -25,6 +26,7 @@ class VolatilityScaledMomentumStrategy:
             )
         return StrategyProposal(
             snapshot_id=features.snapshot_id,
+            strategy=StrategyKind.MOMENTUM,
             version=self.version,
             intents=intents,
         )
