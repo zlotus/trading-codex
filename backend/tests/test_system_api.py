@@ -40,6 +40,7 @@ async def test_system_status_exposes_ready_and_unconfigured_boundaries(
     assert {component["key"] for component in payload["components"]} == {
         "historical_data",
         "decision_kernel",
+        "ledger",
         "realtime_quotes",
         "backtest",
         "ai",
@@ -48,6 +49,7 @@ async def test_system_status_exposes_ready_and_unconfigured_boundaries(
     assert states == {
         "historical_data": "ready",
         "decision_kernel": "ready",
+        "ledger": "ready",
         "realtime_quotes": "not_configured",
         "backtest": "ready",
         "ai": "not_configured",

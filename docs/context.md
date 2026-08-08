@@ -34,7 +34,10 @@ Trading Codex 是面向单个操作者的个人 A 股决策工作区。它把时
 
 系统是一个本地模块化单体，包含两个长期运行的进程：FastAPI API/worker 边界和
 React Web 客户端。市场数据使用不可变 raw artifact 和规范化 Parquet 数据集；
-DuckDB 仍是计划中的查询层，事务状态计划使用 SQLite。
+DuckDB 仍是计划中的查询层，事务状态使用 SQLite append-only 事件账本。
+
+SQLite append-only 事件账本保存 decision、signal、order intent、fill、cash movement
+和 job attempt，并从同一事件模型派生 base、AI-shadow 与 actual 三轨组合视图。
 
 共享决策管线与具体框架无关：
 

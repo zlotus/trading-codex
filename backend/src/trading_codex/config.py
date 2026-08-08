@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,6 +19,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    ledger_path: Path = Path("data/trading-codex.db")
 
     @property
     def cors_origin_list(self) -> list[str]:

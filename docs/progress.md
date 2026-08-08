@@ -4,9 +4,9 @@
 
 ## 当前里程碑
 
-Milestone 2 已完成。版本化特征、首个确定性策略、目标分配、硬风险、执行计划和
-同管线历史 replay 均达到实施计划中的验收线，下一步进入 Milestone 3 的账本与
-日常垂直切片。
+Milestone 3 已完成。append-only 账本、三轨组合投影、可重试日常 job、决策表、
+信号价格图、人工成交与 reconciliation 均达到实施计划中的验收线，下一步进入
+Milestone 4 的市场状态感知策略池。
 
 ## 当前基线
 
@@ -31,22 +31,32 @@ Milestone 2 已完成。版本化特征、首个确定性策略、目标分配�
   和 gross exposure 95% 默认上限。
 - 硬风险和 execution planner 覆盖 stale data、停牌、ST、涨跌停、T+1、整手、
   可卖数量、费用及现金约束；`HistoricalReplay` 直接调用相同 `DecisionPipeline`。
+- SQLite 事件账本仅允许追加 decision run、signal、order intent、fill、cash movement、
+  signal disposition 和 job attempt；数据库 trigger 拒绝 `UPDATE` 与 `DELETE`。
+- base、AI-shadow 和 actual 使用同一事件 schema。人工 HTTP 写入只允许 actual track，
+  所有人工写操作具备 idempotency key，冲突 payload 会 fail closed。
+- 现金与 position lot 按显式 `as_of` 重放；partial fill、费用、T+1、跳过剩余信号和
+  缺失估值价格均有确定性处理，信号可追溯至 decision、snapshot 和 source payload。
+- EOD preparation 与 09:35 decision 使用稳定 run key 和追加式 attempt event；失败可
+  重试，成功 run 不会重复执行。
+- Web 已接入决策表、前复权/不复权双价格图、人工成交、跳过信号、三轨权益和持仓
+  reconciliation；移动端仅让宽表局部横向滚动。
 - BaoStock 前复权日线是显式 opt-in，使用独立 exact-query cache key；默认离线和
   单进程最多一次上游请求的门禁没有放宽。
-- `/api/v1/system/status` 已进入 `research` mode，区分已就绪的历史数据、决策内核、
-  回测边界与尚未接入的实时行情、AI。
+- `/api/v1/system/status` 保持 `research` mode，历史数据、决策内核、账本和回测边界
+  已就绪，实时行情与 AI 仍未配置。
 
 ## 进行中
 
-无。Milestone 3 尚未开始，也没有运行中的 BaoStock 获取任务。
+无。Milestone 4 尚未开始，也没有运行中的 BaoStock 获取任务。
 
 ## 下一步
 
-1. 定义 append-only signals、order intents、fills、cash movements 和 position
-   views，并保持 base、AI-shadow、actual 三条 portfolio track 可归因。
-2. 建立 EOD preparation 与 09:35 decision job 的可重试 run record。
-3. 接入决策表、人工 fill 录入和 reconciliation UI，验证 partial fill、费用及 T+1
-   可卖数量的账务不变量。
+1. 定义版本化的市场状态 feature contract，并在每次查询中强制显式 `as_of`。
+2. 实现动量、短周期反转、防御性低波动和现金策略，以及带迟滞、换手限制和紧急
+   risk-off 的受约束分配器。
+3. 建立共享管线的 walk-forward 和市场状态切片评估，报告扣费后表现、回撤、
+   alpha/beta、block bootstrap 和 Deflated Sharpe。
 
 ## 风险与限制
 
@@ -56,6 +66,11 @@ Milestone 2 已完成。版本化特征、首个确定性策略、目标分配�
   合成 RQAlpha fixture 验证，真实 provider 映射仍需独立样本。
 - 当前真实 normalized 日线尚未缓存 `adjustflag=2` 前复权轨，因此不能从该样本构建
   可执行决策快照。补样本必须显式 opt-in，且每次只处理一个 exact-query cache miss。
+- 新账本默认从零现金开始，必须先通过 actual cash movement API 追加初始资金；目前
+  Web 尚未提供现金变动表单。
+- 当前没有成交纠错 endpoint。发现错误 fill 时不能修改数据库，必须等待显式补偿事件
+  contract。
+- daily job 只有可重试执行边界；自动调度、provider health 和告警仍属于 Milestone 6。
 - BaoStock 免费 endpoint 存在封 IP 风险。扩展本地样本时必须人工、串行、一次只补
   一个 cache miss，不能使用批量循环或并发回源。
 - RQAlpha 当前固定为 6.3.0 并隔离运行。用途变为商业场景或升级版本前，需要重新
@@ -63,11 +78,15 @@ Milestone 2 已完成。版本化特征、首个确定性策略、目标分配�
 
 ## 验证
 
-- 2026-08-08：`.venv/bin/pytest` 通过，36 个测试；包含多个 `as_of` 的完整/截断历史
-  causality、同快照 replay、双价格 fail-closed 和 A 股执行约束 fixture。
+- 2026-08-08：`.venv/bin/pytest` 通过，47 个测试；新增覆盖 partial fill、费用现金
+  事件、T+1、skip、负现金回滚、幂等冲突、append-only trigger、三轨 reconciliation、
+  point-in-time signal lifecycle、job retry 和账本 API。
 - 2026-08-08：`.venv/bin/ruff check .` 通过。
 - 2026-08-08：`pnpm --dir web build` 通过，Vite 6.4.3。
-- 2026-08-08：`uv lock --check` 通过，锁文件与项目依赖一致。
+- 2026-08-08：`UV_CACHE_DIR=/tmp/trading-codex-uv-cache uv lock --check` 通过，锁文件与
+  项目依赖一致。
+- 2026-08-08：Chromium 对带部分成交数据的今日决策和组合对账完成 1440×1000 与真实
+  390×844 CSS viewport 检查；全页无横向溢出，决策宽表保留局部滚动。
 - 2026-08-08：RQAlpha spike 在 `aarch64`、Python 3.12.3、RQAlpha 6.3.0 下
   通过 T+1、手数、停牌、涨跌停、费用和送股 fixture。
 - 2026-08-08：19 标的离线同步重放得到 `cache_hits=19`、`cache_misses=0`、

@@ -4,11 +4,11 @@ Trading Codex 是一个个人使用的 AI 辅助 A 股交易决策系统。它�
 `as_of` 时间边界约束的历史研究、开盘时段行情快照、可审计的策略配置、
 确定性风险控制，以及人工成交后的仓位同步整合到同一个工作区中。
 
-仓库已完成 Milestone 2：本地行情数据基础、RQAlpha 回测适配可行性验证，以及
-共享决策内核均已实现。当前内核包含前复权信号价与不复权执行价分离、版本化动量
-特征、volatility-scaled cross-sectional momentum、目标分配、确定性硬风险、执行
-计划和同管线历史 replay。实时行情、组合账本和 AI 提供方尚未接入。BaoStock 同步
-默认完全离线，具体缓存和限流规则见[本地行情数据指南](data/README.md)。
+仓库已完成 Milestone 3：除本地行情数据、RQAlpha 回测适配和共享决策内核外，现已
+实现 append-only SQLite 事件账本、base/AI-shadow/actual 三轨组合视图、可重试日常
+job run、人工部分成交与跳过、T+1 账务重建和 reconciliation UI。实时行情和 AI
+提供方尚未接入。BaoStock 同步默认完全离线，具体缓存和限流规则见
+[本地行情数据指南](data/README.md)，账本边界见[组合账本操作指南](docs/ledger-operations.md)。
 
 ## 仓库结构
 
@@ -49,6 +49,23 @@ make dev-web
 - API 文档：<http://127.0.0.1:8000/docs>
 
 开发模式提供热更新，适合修改代码时使用。
+
+若本机 `8000` 已被其他服务占用，可以把后端启动到备用端口，并为 Vite 指定开发代理：
+
+```bash
+# 终端 1
+uv run uvicorn trading_codex.main:app \
+  --app-dir backend/src \
+  --reload \
+  --host 127.0.0.1 \
+  --port 8012
+
+# 终端 2
+API_ORIGIN=http://127.0.0.1:8012 pnpm --dir web dev --host 127.0.0.1 --port 5173
+```
+
+`API_ORIGIN` 只接受不含 credentials、path、query 或 fragment 的 HTTP(S) origin；未设置
+时仍使用 `http://127.0.0.1:8000`。
 
 ## 本地构建并发布到 5555 端口
 

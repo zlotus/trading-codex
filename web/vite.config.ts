@@ -25,6 +25,23 @@ function getPreviewAllowedHosts(publicOrigin?: string): string[] {
   return [url.hostname];
 }
 
+function getApiOrigin(value?: string): string {
+  const raw = value || "http://127.0.0.1:8000";
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("API_ORIGIN must be an absolute HTTP(S) origin");
+  }
+  const isHttp = url.protocol === "http:" || url.protocol === "https:";
+  const isOriginOnly =
+    !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash;
+  if (!isHttp || !isOriginOnly) {
+    throw new Error("API_ORIGIN must be an HTTP(S) origin without credentials or a path");
+  }
+  return url.origin;
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "");
 
@@ -34,7 +51,7 @@ export default defineConfig(({ mode }) => {
       host: "127.0.0.1",
       port: 5173,
       proxy: {
-        "/api": "http://127.0.0.1:8000",
+        "/api": getApiOrigin(env.API_ORIGIN),
       },
     },
     preview: {

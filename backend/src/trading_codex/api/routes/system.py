@@ -36,6 +36,12 @@ async def system_status() -> SystemStatusResponse:
                 detail="确定性动量策略、分配、硬风险和执行计划已接入共享管线。",
             ),
             ComponentStatus(
+                key="ledger",
+                label="组合账本",
+                state="ready",
+                detail="append-only SQLite 事件、三轨持仓、人工成交和对账视图已就绪。",
+            ),
+            ComponentStatus(
                 key="realtime_quotes",
                 label="实时行情",
                 state="not_configured",

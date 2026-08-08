@@ -9,3 +9,4 @@ ADR 用于保存长期有效的项目决策及其依据。已接受的记录属�
 | [0002](0002-bounded-ai-authority.md) | Accepted | 约束 AI 权限并保留三条组合轨道的归因 |
 | [0003](0003-adopt-rqalpha-backtest-adapter.md) | Accepted | 采用 RQAlpha 作为受限且可替换的回测执行适配器 |
 | [0004](0004-immutable-dual-price-decision-snapshot.md) | Accepted | 使用不可变双价格快照驱动共享决策管线 |
+| [0005](0005-append-only-sqlite-ledger.md) | Accepted | 使用 append-only SQLite 事件账本和派生组合视图 |
