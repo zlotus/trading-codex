@@ -255,8 +255,15 @@ def test_ledger_migrates_v1_decision_trace_columns_without_rewriting_rows(
             "SELECT regime_version, allocator_version FROM decision_runs "
             "WHERE decision_id = 'legacy-decision'"
         ).fetchone()
-    assert version == 2
+        tables = {
+            item[0]
+            for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert version == 3
     assert row == ("pre-milestone-4", "inverse-volatility-allocation-v1")
+    assert {"ai_runs", "ai_messages"} <= tables
 
 
 def test_ledger_restores_only_prior_m4_allocation_state(tmp_path: Path) -> None:

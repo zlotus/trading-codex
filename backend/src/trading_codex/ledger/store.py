@@ -12,9 +12,21 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trading_codex.ai.contracts import (
+    AIClientResult,
+    AICompletionOutcome,
+    AIMessageRole,
+    AIMessageView,
+    AIOverlayEvaluation,
+    AIProposalStatus,
+    AIRequestContext,
+    AIRunView,
+    CitedEvidence,
+)
 from trading_codex.domain.contracts import (
     AllocationState,
     DecisionRun,
+    StrategyAllocation,
     StrategyKind,
     TargetWeight,
 )
@@ -61,6 +73,8 @@ class SQLiteLedger:
         "signal_dispositions",
         "job_runs",
         "job_attempt_events",
+        "ai_runs",
+        "ai_messages",
     )
 
     def __init__(self, path: str | Path) -> None:
@@ -837,10 +851,261 @@ class SQLiteLedger:
             ).fetchall()
             return tuple(self._job_view(connection, row) for row in rows)
 
+    def record_ai_run(
+        self,
+        *,
+        context: AIRequestContext,
+        client: AIClientResult,
+        evaluation: AIOverlayEvaluation,
+        shadow_decision_id: str,
+        recorded_at: datetime | None = None,
+    ) -> str:
+        recorded = as_utc(recorded_at or datetime.now(UTC), field="recorded_at")
+        if recorded < client.completed_at:
+            raise LedgerInvariantError("AI audit cannot be recorded before completion")
+        _validate_ai_status(client, evaluation)
+        run_id = canonical_sha256(
+            {
+                "request_id": client.request_id,
+                "proposal_id": evaluation.proposal_id,
+                "shadow_decision_id": shadow_decision_id,
+            }
+        )
+        run_payload = {
+            "run_id": run_id,
+            "context": context,
+            "client": client,
+            "evaluation": evaluation,
+            "shadow_decision_id": shadow_decision_id,
+        }
+        run_payload_json = _json_text(run_payload)
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            base = connection.execute(
+                "SELECT * FROM decision_runs WHERE decision_id = ?",
+                (context.base_decision_id,),
+            ).fetchone()
+            shadow = connection.execute(
+                "SELECT * FROM decision_runs WHERE decision_id = ?",
+                (shadow_decision_id,),
+            ).fetchone()
+            if base is None or shadow is None:
+                raise LedgerNotFoundError("AI audit requires recorded base and shadow decisions")
+            if base["portfolio_track"] != PortfolioTrack.BASE.value:
+                raise LedgerInvariantError("AI audit base decision is not on the base track")
+            if shadow["portfolio_track"] != PortfolioTrack.AI_SHADOW.value:
+                raise LedgerInvariantError("AI audit shadow decision is not on the AI-shadow track")
+            if (
+                base["snapshot_id"] != context.snapshot_id
+                or shadow["snapshot_id"] != context.snapshot_id
+            ):
+                raise LedgerInvariantError("AI audit decisions use a different snapshot")
+            if (
+                base["as_of"] != _datetime_text(context.as_of)
+                or base["expires_at"] != _datetime_text(context.decision_deadline)
+            ):
+                raise LedgerInvariantError("AI audit context uses a different time boundary")
+            base_payload = json.loads(base["decision_payload_json"])
+            base_allocated = base_payload.get("allocated", {})
+            if (
+                base_allocated.get("weights")
+                != json.loads(_json_text(context.base_target_weights))
+                or base_allocated.get("cash_weight")
+                != _decimal_text(context.base_cash_weight)
+                or base_allocated.get("turnover") != _decimal_text(context.base_turnover)
+                or base_allocated.get("strategy_allocations")
+                != json.loads(_json_text(context.base_strategy_weights))
+            ):
+                raise LedgerInvariantError("AI audit context disagrees with base decision")
+            shadow_payload = json.loads(shadow["decision_payload_json"])
+            expected_shadow_stages = {
+                "allocated": evaluation.target,
+                "risk": evaluation.risk,
+                "execution": evaluation.execution,
+            }
+            if any(
+                shadow_payload.get(stage) != json.loads(_json_text(value))
+                for stage, value in expected_shadow_stages.items()
+            ):
+                raise LedgerInvariantError("AI audit stages disagree with shadow decision")
+            if shadow["allocator_version"] != evaluation.target.version:
+                raise LedgerInvariantError("AI audit overlay version is inconsistent")
+            expected_configuration_id = canonical_sha256(
+                {
+                    "base_configuration_id": base["configuration_id"],
+                    "base_decision_id": context.base_decision_id,
+                    "ai_proposal_id": evaluation.proposal_id,
+                    "prompt_version": client.prompt_version,
+                    "overlay_version": shadow["allocator_version"],
+                }
+            )
+            if shadow["configuration_id"] != expected_configuration_id:
+                raise LedgerInvariantError("AI shadow configuration id is inconsistent")
+
+            existing = connection.execute(
+                "SELECT run_payload_json FROM ai_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["run_payload_json"] != run_payload_json:
+                    raise LedgerConflictError("AI run id already has different content")
+                return run_id
+
+            connection.execute(
+                """
+                INSERT INTO ai_runs (
+                    run_id, request_id, proposal_id, base_decision_id,
+                    shadow_decision_id, snapshot_id, status, outcome,
+                    provider, model, prompt_version, requested_at, completed_at,
+                    cache_hit, input_tokens, output_tokens, estimated_cost_usd,
+                    request_payload_json, response_payload_json, provider_request_id,
+                    error, summary, rationale, strategy_weights_json, risk_scale,
+                    evidence_json, validation_errors_json, base_target_weights_json,
+                    shadow_target_weights_json, run_payload_json, recorded_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    run_id,
+                    client.request_id,
+                    evaluation.proposal_id,
+                    context.base_decision_id,
+                    shadow_decision_id,
+                    context.snapshot_id,
+                    evaluation.status.value,
+                    client.outcome.value,
+                    client.provider,
+                    client.model,
+                    client.prompt_version,
+                    _datetime_text(client.requested_at),
+                    _datetime_text(client.completed_at),
+                    int(client.cache_hit),
+                    client.input_tokens,
+                    client.output_tokens,
+                    _decimal_text(client.estimated_cost_usd),
+                    client.request_payload_json,
+                    client.response_payload_json,
+                    client.provider_request_id,
+                    client.error,
+                    evaluation.summary,
+                    evaluation.rationale,
+                    _json_text(evaluation.strategy_weights),
+                    _decimal_text(evaluation.risk_scale),
+                    _json_text(evaluation.evidence),
+                    _json_text(evaluation.validation_errors),
+                    _json_text(context.base_target_weights),
+                    _json_text(evaluation.target.weights),
+                    run_payload_json,
+                    _datetime_text(recorded),
+                ),
+            )
+            message_id = canonical_sha256(
+                {
+                    "run_id": run_id,
+                    "proposal_id": evaluation.proposal_id,
+                    "role": AIMessageRole.ASSISTANT,
+                    "content": evaluation.assistant_message,
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO ai_messages (
+                    message_id, run_id, proposal_id, role, content, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    run_id,
+                    evaluation.proposal_id,
+                    AIMessageRole.ASSISTANT.value,
+                    evaluation.assistant_message,
+                    _datetime_text(client.completed_at),
+                ),
+            )
+        return run_id
+
+    def latest_ai_run(self, *, as_of: datetime | None = None) -> AIRunView | None:
+        current = as_utc(as_of or datetime.now(UTC), field="as_of")
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM ai_runs
+                WHERE completed_at <= ? AND recorded_at <= ?
+                ORDER BY completed_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (_datetime_text(current), _datetime_text(current)),
+            ).fetchone()
+            if row is None:
+                return None
+            messages = connection.execute(
+                """
+                SELECT * FROM ai_messages
+                WHERE run_id = ? AND created_at <= ?
+                ORDER BY created_at, rowid
+                """,
+                (row["run_id"], _datetime_text(current)),
+            ).fetchall()
+            return AIRunView(
+                run_id=row["run_id"],
+                request_id=row["request_id"],
+                proposal_id=row["proposal_id"],
+                base_decision_id=row["base_decision_id"],
+                shadow_decision_id=row["shadow_decision_id"],
+                snapshot_id=row["snapshot_id"],
+                status=AIProposalStatus(row["status"]),
+                outcome=AICompletionOutcome(row["outcome"]),
+                provider=row["provider"],
+                model=row["model"],
+                prompt_version=row["prompt_version"],
+                requested_at=_parse_datetime(row["requested_at"]),
+                completed_at=_parse_datetime(row["completed_at"]),
+                cache_hit=bool(row["cache_hit"]),
+                input_tokens=int(row["input_tokens"]),
+                output_tokens=int(row["output_tokens"]),
+                estimated_cost_usd=Decimal(row["estimated_cost_usd"]),
+                summary=row["summary"],
+                rationale=row["rationale"],
+                strategy_weights=tuple(
+                    StrategyAllocation(
+                        strategy=StrategyKind(item["strategy"]),
+                        weight=Decimal(item["weight"]),
+                    )
+                    for item in json.loads(row["strategy_weights_json"])
+                ),
+                risk_scale=Decimal(row["risk_scale"]),
+                evidence=tuple(
+                    CitedEvidence(
+                        evidence_id=item["evidence_id"],
+                        claim=item["claim"],
+                    )
+                    for item in json.loads(row["evidence_json"])
+                ),
+                validation_errors=tuple(json.loads(row["validation_errors_json"])),
+                base_target_weights=_target_weights_from_json(
+                    row["base_target_weights_json"]
+                ),
+                shadow_target_weights=_target_weights_from_json(
+                    row["shadow_target_weights_json"]
+                ),
+                messages=tuple(
+                    AIMessageView(
+                        message_id=message["message_id"],
+                        role=AIMessageRole(message["role"]),
+                        content=message["content"],
+                        created_at=_parse_datetime(message["created_at"]),
+                    )
+                    for message in messages
+                ),
+            )
+
     def _initialize(self) -> None:
         with self._connect() as connection:
             schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if schema_version not in (0, 1, 2):
+            if schema_version not in (0, 1, 2, 3):
                 raise LedgerInvariantError(
                     f"unsupported ledger schema version: {schema_version}"
                 )
@@ -982,6 +1247,63 @@ class SQLiteLedger:
                     ON signals(portfolio_track, expires_at);
                 CREATE INDEX IF NOT EXISTS idx_job_events_run
                     ON job_attempt_events(run_id, occurred_at);
+
+                CREATE TABLE IF NOT EXISTS ai_runs (
+                    run_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL,
+                    base_decision_id TEXT NOT NULL REFERENCES decision_runs(decision_id),
+                    shadow_decision_id TEXT NOT NULL REFERENCES decision_runs(decision_id),
+                    snapshot_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('accepted', 'rejected', 'fallback')
+                    ),
+                    outcome TEXT NOT NULL CHECK (
+                        outcome IN (
+                            'succeeded', 'timeout', 'budget_exceeded',
+                            'provider_error', 'invalid_output'
+                        )
+                    ),
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_version TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    cache_hit INTEGER NOT NULL CHECK (cache_hit IN (0, 1)),
+                    input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+                    output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+                    estimated_cost_usd TEXT NOT NULL,
+                    request_payload_json TEXT NOT NULL,
+                    response_payload_json TEXT,
+                    provider_request_id TEXT,
+                    error TEXT,
+                    summary TEXT NOT NULL,
+                    rationale TEXT NOT NULL,
+                    strategy_weights_json TEXT NOT NULL,
+                    risk_scale TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    validation_errors_json TEXT NOT NULL,
+                    base_target_weights_json TEXT NOT NULL,
+                    shadow_target_weights_json TEXT NOT NULL,
+                    run_payload_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS ai_messages (
+                    message_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES ai_runs(run_id),
+                    proposal_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant')),
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ai_runs_completed
+                    ON ai_runs(completed_at, recorded_at);
+                CREATE INDEX IF NOT EXISTS idx_ai_messages_proposal
+                    ON ai_messages(proposal_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_ai_messages_run
+                    ON ai_messages(run_id, created_at);
                 """
             )
             if schema_version == 1:
@@ -1012,8 +1334,8 @@ class SQLiteLedger:
                     END
                     """
                 )
-            if schema_version < 2:
-                connection.execute("PRAGMA user_version = 2")
+            if schema_version < 3:
+                connection.execute("PRAGMA user_version = 3")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -1423,6 +1745,43 @@ def _clean_note(value: str | None) -> str | None:
     if len(note) > 1000:
         raise LedgerInvariantError("note cannot exceed 1000 characters")
     return note or None
+
+
+def _validate_ai_status(
+    client: AIClientResult,
+    evaluation: AIOverlayEvaluation,
+) -> None:
+    if evaluation.status is AIProposalStatus.ACCEPTED:
+        if (
+            client.outcome is not AICompletionOutcome.SUCCEEDED
+            or evaluation.validation_errors
+        ):
+            raise LedgerInvariantError("accepted AI proposal has a failed validation state")
+        return
+    if evaluation.status is AIProposalStatus.REJECTED:
+        if (
+            client.outcome is not AICompletionOutcome.SUCCEEDED
+            or not evaluation.validation_errors
+        ):
+            raise LedgerInvariantError("rejected AI proposal has an invalid audit state")
+        return
+    if (
+        evaluation.status is not AIProposalStatus.FALLBACK
+        or client.outcome is AICompletionOutcome.SUCCEEDED
+        or not evaluation.validation_errors
+    ):
+        raise LedgerInvariantError("AI fallback has an invalid audit state")
+
+
+def _target_weights_from_json(payload: str) -> tuple[TargetWeight, ...]:
+    return tuple(
+        TargetWeight(
+            code=item["code"],
+            weight=Decimal(item["weight"]),
+            rank=int(item["rank"]),
+        )
+        for item in json.loads(payload)
+    )
 
 
 def _json_text(value: object) -> str:

@@ -1,4 +1,5 @@
 import type {
+  AIWorkspace,
   LedgerDashboard,
   RecordFillInput,
   SignalDetail,
@@ -28,6 +29,11 @@ export async function getSystemStatus(signal?: AbortSignal): Promise<SystemStatu
 export async function getLedgerDashboard(signal?: AbortSignal): Promise<LedgerDashboard> {
   const response = await fetch("/api/v1/ledger/dashboard", { signal });
   return readJson<LedgerDashboard>(response, `Ledger request failed: ${response.status}`);
+}
+
+export async function getAIWorkspace(signal?: AbortSignal): Promise<AIWorkspace> {
+  const response = await fetch("/api/v1/ai/workspace", { signal });
+  return readJson<AIWorkspace>(response, `AI workspace request failed: ${response.status}`);
 }
 
 export async function getSignalDetail(

@@ -50,6 +50,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/ledger/cash-movements \
   movement。
 - `POST /api/v1/ledger/signals/{signal_id}/skip`：保留已成交数量并明确跳过剩余信号。
 - `GET /api/v1/ledger/jobs`：查看 EOD preparation 和 09:35 decision 的重试记录。
+- `GET /api/v1/ai/workspace`：按显式 `as_of` 返回最新 AI 摘要、提案、验证结果、usage、
+  assistant 消息和 base/AI-shadow target 对比；该路由只读。
 
 Web 的“今日决策”页面提供信号详情、部分成交回填和跳过操作；“组合仓位”页面显示
 base、AI-shadow、actual 三轨权益和数量偏差。
@@ -57,6 +59,8 @@ base、AI-shadow、actual 三轨权益和数量偏差。
 ## 不变量与当前限制
 
 - event table 的 `UPDATE` 和 `DELETE` 会被 SQLite trigger 拒绝。
+- ledger schema v3 的 `ai_runs` 和 `ai_messages` 同样只允许追加，并关联 base decision、
+  AI-shadow decision、prompt version、provider/model 和 cache/usage 审计。
 - 每次影响现金或持仓的写入后都会重放受影响 track；负现金、累计成交超过 intent、
   T+1 超卖或成交晚于 intent 失效时间都会回滚整次事务。
 - 估值价格缺失时，`market_value` 和 `equity` 返回 `null`，不能据此生成交易决策。

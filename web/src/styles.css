@@ -925,6 +925,263 @@ button:disabled {
   color: #88a39b;
 }
 
+.ai-error {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border-bottom: 1px solid #ead0d0;
+  background: #fff5f5;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.ai-run-view {
+  min-height: 100%;
+  background: var(--surface);
+}
+
+.ai-run-header {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ai-run-header > span:not(:first-child) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-run-header > span:last-child {
+  margin-left: auto;
+}
+
+.ai-run-status {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-weight: 680;
+}
+
+.ai-run-status-accepted {
+  border-color: #bad9cf;
+  background: #ecf6f2;
+  color: #176353;
+}
+
+.ai-run-status-rejected {
+  border-color: #e3c1c1;
+  background: #fbefef;
+  color: #9c3737;
+}
+
+.ai-run-status-fallback {
+  border-color: #d9c594;
+  background: #fbf5e6;
+  color: #886017;
+}
+
+.ai-copy-section,
+.ai-validation-errors {
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ai-copy-section h3 {
+  margin: 7px 0 8px;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.ai-copy-section p,
+.ai-validation-errors p,
+.ai-message p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #52616b;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.ai-evidence-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-evidence-list li {
+  display: grid;
+  gap: 4px;
+  padding: 9px 0;
+  border-bottom: 1px solid #edf0f1;
+}
+
+.ai-evidence-list li:last-child {
+  border-bottom: 0;
+}
+
+.ai-evidence-list code,
+.ai-target-list code {
+  overflow-wrap: anywhere;
+  color: #245d80;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+}
+
+.ai-evidence-list span {
+  color: #52616b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ai-section-heading,
+.ai-strategy-row > div,
+.ai-target-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-section-heading strong {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ai-strategy-list {
+  display: grid;
+  gap: 11px;
+  margin-top: 12px;
+}
+
+.ai-strategy-row {
+  display: grid;
+  gap: 5px;
+  color: #52616b;
+  font-size: 11px;
+}
+
+.ai-strategy-row strong {
+  color: var(--text);
+}
+
+.ai-strategy-row i {
+  display: block;
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #e7ebed;
+}
+
+.ai-strategy-row b {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.ai-target-list {
+  margin-top: 7px;
+}
+
+.ai-target-list > div {
+  min-height: 30px;
+  border-bottom: 1px solid #edf0f1;
+  font-size: 11px;
+}
+
+.ai-target-list > div:last-child {
+  border-bottom: 0;
+}
+
+.ai-validation-errors {
+  background: #fffafa;
+}
+
+.ai-validation-errors p {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--danger);
+}
+
+.ai-validation-errors svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.ai-message-list {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.ai-message {
+  padding-left: 10px;
+  border-left: 2px solid #b9d7cd;
+}
+
+.ai-message header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ai-message time {
+  white-space: nowrap;
+}
+
+.ai-muted {
+  margin-top: 8px !important;
+  color: #8b969d !important;
+}
+
+.ai-audit-footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+  padding: 10px 14px;
+  background: #f8f9fa;
+}
+
+.ai-audit-footer div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 5px;
+  padding: 5px 0;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.ai-audit-footer dt {
+  color: #87939b;
+}
+
+.ai-audit-footer dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #52616b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ai-composer {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 34px;

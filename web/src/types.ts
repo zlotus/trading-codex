@@ -110,3 +110,74 @@ export interface SkipSignalInput {
   occurred_at: string;
   idempotency_key: string;
 }
+
+export type AIProposalStatus = "accepted" | "rejected" | "fallback";
+export type AICompletionOutcome =
+  | "succeeded"
+  | "timeout"
+  | "budget_exceeded"
+  | "provider_error"
+  | "invalid_output";
+export type StrategyKind =
+  | "momentum"
+  | "short_term_reversal"
+  | "defensive_low_volatility"
+  | "cash";
+
+export interface AIStrategyWeight {
+  strategy: StrategyKind;
+  weight: string;
+}
+
+export interface AITargetWeight {
+  code: string;
+  weight: string;
+  rank: number;
+}
+
+export interface AIEvidence {
+  evidence_id: string;
+  claim: string;
+}
+
+export interface AIMessage {
+  message_id: string;
+  role: "system" | "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface AIRun {
+  run_id: string;
+  request_id: string;
+  proposal_id: string;
+  base_decision_id: string;
+  shadow_decision_id: string;
+  snapshot_id: string;
+  status: AIProposalStatus;
+  outcome: AICompletionOutcome;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  requested_at: string;
+  completed_at: string;
+  cache_hit: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: string;
+  summary: string;
+  rationale: string;
+  strategy_weights: AIStrategyWeight[];
+  risk_scale: string;
+  evidence: AIEvidence[];
+  validation_errors: string[];
+  base_target_weights: AITargetWeight[];
+  shadow_target_weights: AITargetWeight[];
+  messages: AIMessage[];
+}
+
+export interface AIWorkspace {
+  core_state: "ready";
+  provider_configured: boolean;
+  latest: AIRun | null;
+}

@@ -57,7 +57,7 @@ async def system_status() -> SystemStatusResponse:
                 key="ai",
                 label="AI 协作",
                 state="not_configured",
-                detail="尚未配置模型提供方，AI 不能参与当前决策。",
+                detail="受限客户端、AI-shadow fallback 和审计已就绪；尚未接入模型 adapter。",
             ),
         ],
     )

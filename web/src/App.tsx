@@ -28,6 +28,7 @@ import type { LucideIcon } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  getAIWorkspace,
   getLedgerDashboard,
   getSignalDetail,
   getSystemStatus,
@@ -35,6 +36,8 @@ import {
   skipSignal,
 } from "./api";
 import type {
+  AIRun,
+  AIWorkspace,
   LedgerDashboard,
   PositionView,
   SignalDetail,
@@ -75,6 +78,19 @@ const STATUS_LABELS: Record<SignalStatus, string> = {
   filled: "已完成",
   skipped: "已跳过",
   expired: "已失效",
+};
+
+const AI_STATUS_LABELS: Record<AIRun["status"], string> = {
+  accepted: "边界通过",
+  rejected: "已拒绝",
+  fallback: "基础回退",
+};
+
+const STRATEGY_LABELS: Record<AIRun["strategy_weights"][number]["strategy"], string> = {
+  momentum: "动量",
+  short_term_reversal: "短周期反转",
+  defensive_low_volatility: "防御低波动",
+  cash: "现金",
 };
 
 function formatShanghaiTime(value: Date): string {
@@ -133,6 +149,9 @@ function App() {
   const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
   const [signalDetail, setSignalDetail] = useState<SignalDetail | null>(null);
+  const [aiWorkspace, setAIWorkspace] = useState<AIWorkspace | null>(null);
+  const [aiLoading, setAILoading] = useState(true);
+  const [aiError, setAIError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1_000);
@@ -182,6 +201,32 @@ function App() {
       window.clearInterval(timer);
     };
   }, [loadLedger]);
+
+  const loadAIWorkspace = useCallback(async (signal?: AbortSignal) => {
+    setAILoading(true);
+    try {
+      setAIWorkspace(await getAIWorkspace(signal));
+      setAIError(null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setAIError(error instanceof Error ? error.message : "AI 审计读取失败");
+    } finally {
+      if (!signal?.aborted) setAILoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadAIWorkspace(controller.signal);
+    const timer = window.setInterval(
+      () => void loadAIWorkspace(controller.signal),
+      30_000,
+    );
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [loadAIWorkspace]);
 
   useEffect(() => {
     const signals = dashboard?.signals ?? [];
@@ -300,48 +345,206 @@ function App() {
         )}
       </main>
 
-      <aside className="ai-panel">
-        <header className="ai-header">
-          <div>
-            <span className="eyebrow">受限决策层</span>
-            <h2><Sparkles size={17} /> AI 协作</h2>
-          </div>
-          <div className="icon-actions">
-            <button disabled title="暂无历史" type="button"><History size={17} /></button>
-            <button disabled title="暂无决策上下文" type="button"><Plus size={17} /></button>
-          </div>
-        </header>
+      <AIWorkspacePanel
+        error={aiError}
+        loading={aiLoading}
+        onSelectTab={setAiTab}
+        onRefresh={() => loadAIWorkspace()}
+        tab={aiTab}
+        workspace={aiWorkspace}
+      />
+    </div>
+  );
+}
 
-        <div className="ai-tabs" role="tablist" aria-label="AI 协作视图">
-          {AI_TABS.map((tab) => (
-            <button
-              aria-selected={aiTab === tab.id}
-              className={aiTab === tab.id ? "active" : ""}
-              key={tab.id}
-              onClick={() => setAiTab(tab.id)}
-              role="tab"
-              type="button"
-            >
-              {tab.label}
-            </button>
+function AIWorkspacePanel({
+  workspace,
+  tab,
+  loading,
+  error,
+  onSelectTab,
+  onRefresh,
+}: {
+  workspace: AIWorkspace | null;
+  tab: AiTab;
+  loading: boolean;
+  error: string | null;
+  onSelectTab: (tab: AiTab) => void;
+  onRefresh: () => Promise<void>;
+}) {
+  const latest = workspace?.latest ?? null;
+  const emptyTitle = tab === "summary"
+    ? "暂无决策摘要"
+    : tab === "proposal"
+      ? "暂无影子提案"
+      : "暂无对话记录";
+  return (
+    <aside className="ai-panel">
+      <header className="ai-header">
+        <div>
+          <span className="eyebrow">受限决策层</span>
+          <h2><Sparkles size={17} /> AI 协作</h2>
+        </div>
+        <div className="icon-actions">
+          <button disabled title="历史列表未启用" type="button"><History size={17} /></button>
+          <button
+            className={loading ? "is-loading" : ""}
+            disabled={loading}
+            onClick={() => void onRefresh()}
+            title="刷新 AI 审计"
+            type="button"
+          ><RefreshCw size={17} /></button>
+        </div>
+      </header>
+
+      <div className="ai-tabs" role="tablist" aria-label="AI 协作视图">
+        {AI_TABS.map((item) => (
+          <button
+            aria-selected={tab === item.id}
+            className={tab === item.id ? "active" : ""}
+            key={item.id}
+            onClick={() => onSelectTab(item.id)}
+            role="tab"
+            type="button"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="ai-content">
+        {error ? <div className="ai-error" role="alert"><AlertCircle size={15} />{error}</div> : null}
+        {latest ? (
+          tab === "summary" ? <AISummary run={latest} />
+            : tab === "proposal" ? <AIProposal run={latest} />
+              : <AIConversation run={latest} />
+        ) : (
+          <div className="ai-empty">
+            {tab === "summary" ? <Sparkles size={25} /> : tab === "proposal" ? <ShieldCheck size={25} /> : <MessageSquareText size={25} />}
+            <strong>{loading ? "正在读取 AI 审计" : emptyTitle}</strong>
+            <span>{workspace?.provider_configured ? "等待首个影子运行" : "模型提供方未配置"}</span>
+          </div>
+        )}
+      </div>
+
+      <footer className="ai-composer">
+        <button disabled title="附件未启用" type="button"><Plus size={18} /></button>
+        <textarea aria-label="AI 对话输入" disabled placeholder="暂无对话上下文" rows={1} />
+        <button className="send-button" disabled title="对话写入未启用" type="button"><ArrowUp size={18} /></button>
+      </footer>
+    </aside>
+  );
+}
+
+function AIRunHeader({ run }: { run: AIRun }) {
+  return (
+    <div className="ai-run-header">
+      <span className={`ai-run-status ai-run-status-${run.status}`}>
+        {AI_STATUS_LABELS[run.status]}
+      </span>
+      <span>{run.model}</span>
+      <span>{formatDeadline(run.completed_at)}</span>
+    </div>
+  );
+}
+
+function AISummary({ run }: { run: AIRun }) {
+  return (
+    <div className="ai-run-view">
+      <AIRunHeader run={run} />
+      <section className="ai-copy-section">
+        <span className="eyebrow">决策摘要</span>
+        <h3>{run.summary}</h3>
+        <p>{run.rationale}</p>
+      </section>
+      <section className="ai-copy-section">
+        <span className="eyebrow">引用证据</span>
+        {run.evidence.length ? (
+          <ul className="ai-evidence-list">
+            {run.evidence.map((item) => (
+              <li key={item.evidence_id}>
+                <code>{item.evidence_id}</code>
+                <span>{item.claim}</span>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="ai-muted">本次 fallback 没有采用模型证据。</p>}
+      </section>
+      <AIAuditFooter run={run} />
+    </div>
+  );
+}
+
+function AIProposal({ run }: { run: AIRun }) {
+  const base = new Map(run.base_target_weights.map((item) => [item.code, Number(item.weight)]));
+  const shadow = new Map(run.shadow_target_weights.map((item) => [item.code, Number(item.weight)]));
+  const changedCodes = [...new Set([...base.keys(), ...shadow.keys()])]
+    .filter((code) => Math.abs((shadow.get(code) ?? 0) - (base.get(code) ?? 0)) > 0.00000001)
+    .sort((left, right) => Math.abs((shadow.get(right) ?? 0) - (base.get(right) ?? 0)) - Math.abs((shadow.get(left) ?? 0) - (base.get(left) ?? 0)));
+  return (
+    <div className="ai-run-view">
+      <AIRunHeader run={run} />
+      <section className="ai-copy-section">
+        <div className="ai-section-heading">
+          <span className="eyebrow">策略分配</span>
+          <strong>风险倍率 {formatNumber(Number(run.risk_scale) * 100, 0)}%</strong>
+        </div>
+        <div className="ai-strategy-list">
+          {run.strategy_weights.map((item) => (
+            <div className="ai-strategy-row" key={item.strategy}>
+              <div><span>{STRATEGY_LABELS[item.strategy]}</span><strong>{formatNumber(Number(item.weight) * 100, 0)}%</strong></div>
+              <i><b style={{ width: `${Math.max(0, Math.min(100, Number(item.weight) * 100))}%` }} /></i>
+            </div>
           ))}
         </div>
-
-        <div className="ai-content">
-          <div className="ai-empty">
-            {aiTab === "summary" ? <Sparkles size={25} /> : aiTab === "proposal" ? <ShieldCheck size={25} /> : <MessageSquareText size={25} />}
-            <strong>{aiTab === "summary" ? "暂无决策摘要" : aiTab === "proposal" ? "暂无待审提案" : "暂无对话"}</strong>
-            <span>AI 服务尚未配置</span>
+      </section>
+      <section className="ai-copy-section">
+        <span className="eyebrow">相对基础目标</span>
+        {changedCodes.length ? (
+          <div className="ai-target-list">
+            {changedCodes.slice(0, 8).map((code) => {
+              const delta = (shadow.get(code) ?? 0) - (base.get(code) ?? 0);
+              return <div key={code}><code>{code}</code><span className={delta > 0 ? "delta-up" : "delta-down"}>{delta > 0 ? "+" : ""}{formatNumber(delta * 100)}%</span></div>;
+            })}
           </div>
-        </div>
-
-        <footer className="ai-composer">
-          <button disabled title="附件尚未启用" type="button"><Plus size={18} /></button>
-          <textarea aria-label="AI 对话输入" disabled placeholder="等待决策上下文" rows={1} />
-          <button className="send-button" disabled title="AI 服务尚未配置" type="button"><ArrowUp size={18} /></button>
-        </footer>
-      </aside>
+        ) : <p className="ai-muted">AI-shadow 与基础目标一致。</p>}
+      </section>
+      {run.validation_errors.length ? (
+        <section className="ai-validation-errors">
+          <span className="eyebrow">拒绝原因</span>
+          {run.validation_errors.map((item) => <p key={item}><AlertCircle size={13} />{item}</p>)}
+        </section>
+      ) : null}
+      <AIAuditFooter run={run} />
     </div>
+  );
+}
+
+function AIConversation({ run }: { run: AIRun }) {
+  return (
+    <div className="ai-run-view">
+      <AIRunHeader run={run} />
+      <div className="ai-message-list">
+        {run.messages.length ? run.messages.map((message) => (
+          <article className={`ai-message ai-message-${message.role}`} key={message.message_id}>
+            <header><span>{message.role === "assistant" ? "AI 审阅" : message.role}</span><time>{formatDeadline(message.created_at)}</time></header>
+            <p>{message.content}</p>
+          </article>
+        )) : <p className="ai-muted">本次运行没有对话记录。</p>}
+      </div>
+      <AIAuditFooter run={run} />
+    </div>
+  );
+}
+
+function AIAuditFooter({ run }: { run: AIRun }) {
+  return (
+    <dl className="ai-audit-footer">
+      <div><dt>Prompt</dt><dd>{run.prompt_version}</dd></div>
+      <div><dt>Tokens</dt><dd>{(run.input_tokens + run.output_tokens).toLocaleString("zh-CN")}</dd></div>
+      <div><dt>Cache</dt><dd>{run.cache_hit ? "hit" : "miss"}</dd></div>
+      <div><dt>Proposal</dt><dd title={run.proposal_id}>{run.proposal_id.slice(0, 10)}</dd></div>
+    </dl>
   );
 }
 
