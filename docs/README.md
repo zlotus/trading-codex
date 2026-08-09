@@ -9,6 +9,8 @@
 - [`regime-evaluation.md`](regime-evaluation.md)：市场状态、策略切换和 walk-forward 评估 contract。
 - [`ai-shadow-operations.md`](ai-shadow-operations.md)：受限 LLM 客户端、AI-shadow、审计和
   隔离研究数据 contract。
+- [`forward-operations.md`](forward-operations.md)：一次性调度、provider health、告警、
+  一致性备份、replay 和 60 日归因门槛。
 - [`decisions/`](decisions/README.md)：已接受的长期技术及产品决策，以及决策依据。
 - [`cloudflare-zero-trust-deployment.md`](cloudflare-zero-trust-deployment.md)：
   通过本机现有 Cloudflare Tunnel 和 Access 安全发布到互联网。

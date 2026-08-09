@@ -59,12 +59,15 @@ base、AI-shadow、actual 三轨权益和数量偏差。
 ## 不变量与当前限制
 
 - event table 的 `UPDATE` 和 `DELETE` 会被 SQLite trigger 拒绝。
-- ledger schema v3 的 `ai_runs` 和 `ai_messages` 同样只允许追加，并关联 base decision、
-  AI-shadow decision、prompt version、provider/model 和 cache/usage 审计。
+- ledger schema v4 的 `ai_runs`、`ai_messages`、`provider_health_checks`、`alert_events` 和
+  `forward_observations` 同样只允许追加。AI 事件关联 base/AI-shadow decision、prompt、
+  provider/model 和 cache/usage；前瞻 observation 关联双轨 decision、snapshot 和 metric/
+  source payload hashes。
 - 每次影响现金或持仓的写入后都会重放受影响 track；负现金、累计成交超过 intent、
   T+1 超卖或成交晚于 intent 失效时间都会回滚整次事务。
 - 估值价格缺失时，`market_value` 和 `equity` 返回 `null`，不能据此生成交易决策。
 - 当前没有成交纠错 endpoint。发现错误成交时不要直接修改数据库；必须等待显式补偿事件
   contract 实现。
-- daily job 已具备幂等 run 和追加式 attempt 记录，但自动调度、告警及 provider health
-  仍属于 Milestone 6。
+- daily job 使用稳定 run key 和追加式 attempt lease；并发进程不会重复调用 task，超时
+  attempt 先追加失败事件再重试。外部 timer、真实 daily task 与 notification adapter 尚未启用，
+  具体边界见[前瞻模拟运维](forward-operations.md)。

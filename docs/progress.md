@@ -4,10 +4,10 @@
 
 ## 当前里程碑
 
-Milestone 4 的真实 OOS 证据仍待补齐；Milestone 5 的代码 contract 与合成验收已实现。
-provider-neutral 客户端、受限 AI-shadow 分配、确定性 fallback、append-only 审计和隔离
-研究工具已接入，但当前没有模型 adapter 或 live inference 证据。M4 未关闭前不能进入
-Milestone 6 的前瞻运行。
+Milestone 4 的真实 OOS 证据仍待补齐；Milestone 5 和 Milestone 6 运维内核的代码 contract
+与合成验收已实现。M6 现在具备 health gate、告警、并发 attempt lease、一致性备份、replay
+和 60 日归因门槛，但没有 daily task composition、外部 timer、notification adapter 或真实
+前瞻 observation。M4 未关闭前不能启动 Milestone 6 前瞻运行，当前进度为 0/60 个交易日。
 
 ## 当前基线
 
@@ -43,14 +43,15 @@ Milestone 6 的前瞻运行。
   可卖数量、费用及现金约束；`HistoricalReplay` 直接调用相同 `DecisionPipeline`。
 - SQLite 事件账本仅允许追加 decision run、signal、order intent、fill、cash movement、
   signal disposition 和 job attempt；数据库 trigger 拒绝 `UPDATE` 与 `DELETE`。
-- ledger schema v3 单独记录 `regime_version` 与 `allocator_version`，并新增 append-only
-  `ai_runs` 与 `ai_messages`；v1 迁移只追加 legacy 标记列，不改写历史 decision payload。
+- ledger schema v4 单独记录 `regime_version` 与 `allocator_version`，并包含 append-only
+  `ai_runs`、`ai_messages`、provider health、alert 和 forward observation；v1 迁移只追加
+  legacy 标记列及新表，不改写历史 decision payload。
 - base、AI-shadow 和 actual 使用同一事件 schema。人工 HTTP 写入只允许 actual track，
   所有人工写操作具备 idempotency key，冲突 payload 会 fail closed。
 - 现金与 position lot 按显式 `as_of` 重放；partial fill、费用、T+1、跳过剩余信号和
   缺失估值价格均有确定性处理，信号可追溯至 decision、snapshot 和 source payload。
-- EOD preparation 与 09:35 decision 使用稳定 run key 和追加式 attempt event；失败可
-  重试，成功 run 不会重复执行。
+- EOD preparation 与 09:35 decision 使用稳定 run key 和追加式 attempt lease；并发运行只
+  允许一个 task，30 分钟超时 attempt 先追加 `failed` 后再重试，成功 run 不会重复执行。
 - Web 已接入决策表、前复权/不复权双价格图、人工成交、跳过信号、三轨权益和持仓
   reconciliation，以及只读 AI 摘要、提案、证据、拒绝原因和对话审计；移动端仅让宽表
   局部横向滚动。
@@ -66,11 +67,17 @@ Milestone 6 的前瞻运行。
   单进程最多一次上游请求的门禁没有放宽。
 - `/api/v1/system/status` 保持 `research` mode，历史数据、决策内核、账本和回测边界
   已就绪；实时行情与模型 adapter 仍未配置，AI 核心不会因此伪报为可运行。
+- `OneShotDailyScheduler` 只处理当前交易日 09:35/15:30 窄窗口，并在 task 前强制 critical
+  provider health；health、alert 与 observation 使用 append-only schema，API 只读。
+- `trading-codex-ops` 可用 SQLite online backup 创建内容寻址 manifest，校验 hash、
+  `quick_check`、foreign keys 与 trigger，并在临时副本 replay 三轨投影；59 日观察会拒绝
+  生成归因报告，满 60 日才输出逐日 trace 与四类差异。
 
 ## 进行中
 
-M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 live AI 提案；当前没有
-运行中的 BaoStock 获取任务，扩样仍必须人工、串行，遵守每进程最多一次上游请求的门禁。
+M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 live AI 提案；M6 没有已
+安装的 timer、真实 daily task、远程通知或 observation。当前也没有运行中的 BaoStock 获取
+任务，扩样仍必须人工、串行，遵守每进程最多一次上游请求的门禁。
 
 ## 下一步
 
@@ -79,8 +86,9 @@ M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 
 2. 用真实 replay 生成多组版本化参数的 `EvaluationPeriod`，产出并审阅首份扣费 OOS
    报告；若覆盖、成交成本或统计证据不足，继续 fail closed。
 3. 报告通过后校准状态阈值、迟滞和换手上限，提升配置版本并重跑完整 walk-forward；
-   关闭 M4 后再选择 provider adapter，冻结 prompt、预算和 timeout，并人工运行一次只写
-   `ai_shadow` 的受控 dry-run。审计不完整时保持 `not_configured`，不能扩大 AI 权限。
+   关闭 M4 后再选择 provider adapters，组合真实 daily tasks，完成备份/replay 与告警送达
+   演练，再安装外部 timer 并从只写 base/`ai_shadow` 的 dry-run 开始。审计不完整时保持
+   `not_configured`，不能扩大 AI 权限。
 
 ## 风险与限制
 
@@ -97,7 +105,10 @@ M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 
   Web 尚未提供现金变动表单。
 - 当前没有成交纠错 endpoint。发现错误 fill 时不能修改数据库，必须等待显式补偿事件
   contract。
-- daily job 只有可重试执行边界；自动调度、provider health 和告警仍属于 Milestone 6。
+- M6 scheduler 目前只是可注入的 one-shot contract，没有真实 calendar/task/provider
+  composition，也没有安装外部 timer；合成 health/lease 测试不能视为前瞻运行证据。
+- alert 已在账本中记录 `opened/resolved`，但尚无 notification adapter 或真实送达证据。
+- forward observation 当前为 0/60。报告 contract 的合成 60 日测试不能替代真实连续观察。
 - 当前没有模型 adapter、真实 latency/cost 或 live proposal 证据；右侧 AI 面板只显示已
   存在的 append-only 运行记录，不提供触发运行、审批成交或修改风险配置的入口。
 - 研究 runner 防止正常流程在 candidate freeze 前获得 test descriptor；执行不可信研究
@@ -109,16 +120,18 @@ M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 
 
 ## 验证
 
-- 2026-08-09：`.venv/bin/pytest` 通过，71 个测试；除 M4 原有因果性、状态、分配和
-  walk-forward 覆盖外，M5 新增严格结构化输出、预算、timeout、cache key、不可变 cache、
-  未知策略/证据、迟到/越界拒绝、fallback、base/AI-shadow 分轨、ledger v1→v3 迁移、
-  append-only AI 审计、只读 API 和隔离研究数据测试。
+- 2026-08-09：`.venv/bin/pytest` 通过，85 个测试；除 M1-M5 原有覆盖外，M6 新增 critical
+  provider fail-closed、alert 恢复、并发 lease、超时重试、交易日窗口、schema v1→v4、
+  append-only 运维事件、备份篡改、point-in-time replay、observation trace、59/60 日门槛和
+  只读 operations API 测试。
 - 2026-08-09：`.venv/bin/ruff check .` 通过。
 - 2026-08-09：`pnpm --dir web build` 通过，Vite 6.4.3。
 - 2026-08-09：`UV_CACHE_DIR=/tmp/trading-codex-uv-cache uv lock --check` 通过，锁文件与
   项目依赖一致。
 - 2026-08-09：`PYTHONPATH=backend/src .venv/bin/python -m
   trading_codex.ai.research_cli --help` 通过，隔离研究 CLI 入口可用。
+- 2026-08-09：`PYTHONPATH=backend/src .venv/bin/python -m
+  trading_codex.operations.cli --help` 通过，备份、校验、replay 和前瞻报告入口可用。
 - 2026-08-09：Chromium 132.0.6834.159 使用合成 AI-shadow ledger 检查 1440×1000 和
   390×844 CSS viewport；摘要、提案、对话 panel 无重叠，移动端 document width 为
   390px，720px 信号表仅在局部 `.table-scroll` 内横向滚动。

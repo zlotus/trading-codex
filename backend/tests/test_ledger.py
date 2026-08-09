@@ -261,7 +261,7 @@ def test_ledger_migrates_v1_decision_trace_columns_without_rewriting_rows(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-    assert version == 3
+    assert version == 4
     assert row == ("pre-milestone-4", "inverse-volatility-allocation-v1")
     assert {"ai_runs", "ai_messages"} <= tables
 
@@ -595,7 +595,7 @@ async def ledger_client(tmp_path: Path) -> httpx2.AsyncClient:
         as_of=as_of,
         side=OrderSide.BUY,
         quantity=200,
-        deadline=datetime(2026, 8, 9, 8, tzinfo=UTC),
+        deadline=datetime.max.replace(tzinfo=UTC),
         key="api",
     )
     ledger.record_decision(snapshot, run)

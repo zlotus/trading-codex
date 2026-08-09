@@ -53,6 +53,23 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+class ProviderHealthState(StrEnum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    NOT_CONFIGURED = "not_configured"
+
+
+class AlertSeverity(StrEnum):
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class AlertPhase(StrEnum):
+    OPENED = "opened"
+    RESOLVED = "resolved"
+
+
 @dataclass(frozen=True)
 class PositionView:
     code: str
@@ -176,6 +193,54 @@ class JobRunView:
     attempts: int
     latest_error: str | None
     latest_result: dict[str, object] | None
+
+
+@dataclass(frozen=True)
+class ProviderHealthCheck:
+    check_id: str
+    provider: str
+    state: ProviderHealthState
+    critical: bool
+    checked_at: datetime
+    latency_ms: int
+    detail: str
+    metadata: dict[str, object]
+
+
+@dataclass(frozen=True)
+class AlertView:
+    alert_key: str
+    phase: AlertPhase
+    severity: AlertSeverity
+    message: str
+    occurred_at: datetime
+    source_check_id: str | None
+    source_job_run_id: str | None
+    context: dict[str, object]
+
+    @property
+    def active(self) -> bool:
+        return self.phase is AlertPhase.OPENED
+
+
+@dataclass(frozen=True)
+class ForwardObservation:
+    observation_id: str
+    trading_date: date
+    observed_at: datetime
+    base_decision_id: str
+    ai_shadow_decision_id: str
+    snapshot_id: str
+    base_configuration_id: str
+    ai_shadow_configuration_id: str
+    benchmark_return: Decimal
+    base_target_return: Decimal
+    base_simulated_return: Decimal
+    ai_shadow_return: Decimal
+    actual_return: Decimal
+    transaction_cost_rate: Decimal
+    source_payloads: tuple[str, ...]
+    metric_payload_sha256: str
 
 
 def as_utc(value: datetime, *, field: str) -> datetime:

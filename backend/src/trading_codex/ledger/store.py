@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Context, Decimal
 from enum import Enum
 from pathlib import Path
@@ -33,9 +33,13 @@ from trading_codex.domain.contracts import (
 from trading_codex.domain.hashing import canonical_sha256
 from trading_codex.domain.models import DecisionSnapshot
 from trading_codex.ledger.models import (
+    AlertPhase,
+    AlertSeverity,
+    AlertView,
     CashMovementKind,
     CashMovementRecord,
     FillRecord,
+    ForwardObservation,
     JobRunView,
     JobStatus,
     JobType,
@@ -46,6 +50,8 @@ from trading_codex.ledger.models import (
     PortfolioTrack,
     PositionView,
     PricePoint,
+    ProviderHealthCheck,
+    ProviderHealthState,
     ReconciliationRow,
     ReconciliationView,
     SignalDetail,
@@ -75,6 +81,9 @@ class SQLiteLedger:
         "job_attempt_events",
         "ai_runs",
         "ai_messages",
+        "provider_health_checks",
+        "alert_events",
+        "forward_observations",
     )
 
     def __init__(self, path: str | Path) -> None:
@@ -782,15 +791,13 @@ class SQLiteLedger:
         result: dict[str, object] | None = None,
         error: str | None = None,
     ) -> None:
-        if phase not in {"started", "succeeded", "failed"}:
-            raise LedgerInvariantError("unknown job attempt phase")
+        if phase not in {"succeeded", "failed"}:
+            raise LedgerInvariantError("job attempt starts must use begin_job_attempt")
         occurred = as_utc(occurred_at, field="occurred_at")
         if phase == "succeeded" and (result is None or error is not None):
             raise LedgerInvariantError("succeeded attempts require a result and no error")
         if phase == "failed" and (not error or result is not None):
             raise LedgerInvariantError("failed attempts require an error and no result")
-        if phase == "started" and (result is not None or error is not None):
-            raise LedgerInvariantError("started attempts cannot contain an outcome")
         result_json = _json_text(result) if result is not None else None
 
         with self._connect() as connection:
@@ -802,16 +809,17 @@ class SQLiteLedger:
                 raise LedgerNotFoundError("job run does not exist")
             events = connection.execute(
                 """
-                SELECT phase FROM job_attempt_events
+                SELECT phase, occurred_at FROM job_attempt_events
                 WHERE run_id = ? AND attempt_id = ? ORDER BY rowid
                 """,
                 (run_id, attempt_id),
             ).fetchall()
             phases = [row["phase"] for row in events]
-            if phase == "started" and phases:
-                raise LedgerConflictError("job attempt already started")
-            if phase != "started" and phases != ["started"]:
+            if phases != ["started"]:
                 raise LedgerInvariantError("job attempt outcome must follow one start event")
+            started_at = _parse_datetime(events[0]["occurred_at"])
+            if occurred < started_at:
+                raise LedgerInvariantError("job attempt outcome cannot precede its start")
             event_id = canonical_sha256(
                 {"run_id": run_id, "attempt_id": attempt_id, "phase": phase}
             )
@@ -833,6 +841,78 @@ class SQLiteLedger:
                 ),
             )
 
+    def begin_job_attempt(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        occurred_at: datetime,
+        stale_after: timedelta,
+    ) -> bool:
+        if not attempt_id or len(attempt_id) > 100:
+            raise LedgerInvariantError("attempt_id must contain 1 to 100 characters")
+        if stale_after <= timedelta(0):
+            raise LedgerInvariantError("job attempt lease must be positive")
+        occurred = as_utc(occurred_at, field="occurred_at")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT 1 FROM job_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise LedgerNotFoundError("job run does not exist")
+            events = connection.execute(
+                """
+                SELECT * FROM job_attempt_events
+                WHERE run_id = ? ORDER BY occurred_at, rowid
+                """,
+                (run_id,),
+            ).fetchall()
+            latest = events[-1] if events else None
+            if latest is not None and latest["phase"] == "succeeded":
+                return False
+            if latest is not None and occurred < _parse_datetime(latest["occurred_at"]):
+                raise LedgerInvariantError("job attempt cannot precede the latest run event")
+            if latest is not None and latest["phase"] == "started":
+                started_at = _parse_datetime(latest["occurred_at"])
+                if occurred - started_at <= stale_after:
+                    raise LedgerConflictError("job run already has an active attempt")
+                abandoned_id = canonical_sha256(
+                    {
+                        "run_id": run_id,
+                        "attempt_id": latest["attempt_id"],
+                        "phase": "failed",
+                    }
+                )
+                connection.execute(
+                    """
+                    INSERT INTO job_attempt_events (
+                        event_id, run_id, attempt_id, phase, occurred_at,
+                        result_json, error
+                    ) VALUES (?, ?, ?, 'failed', ?, NULL, ?)
+                    """,
+                    (
+                        abandoned_id,
+                        run_id,
+                        latest["attempt_id"],
+                        _datetime_text(occurred),
+                        "JobAttemptLeaseExpired: previous attempt exceeded its lease",
+                    ),
+                )
+            event_id = canonical_sha256(
+                {"run_id": run_id, "attempt_id": attempt_id, "phase": "started"}
+            )
+            connection.execute(
+                """
+                INSERT INTO job_attempt_events (
+                    event_id, run_id, attempt_id, phase, occurred_at,
+                    result_json, error
+                ) VALUES (?, ?, ?, 'started', ?, NULL, NULL)
+                """,
+                (event_id, run_id, attempt_id, _datetime_text(occurred)),
+            )
+            return True
+
     def job_run(self, run_id: str) -> JobRunView:
         with self._connect() as connection:
             run = connection.execute(
@@ -850,6 +930,358 @@ class SQLiteLedger:
                 "SELECT * FROM job_runs ORDER BY scheduled_for DESC LIMIT ?", (limit,)
             ).fetchall()
             return tuple(self._job_view(connection, row) for row in rows)
+
+    def record_provider_health(
+        self,
+        *,
+        provider: str,
+        state: ProviderHealthState,
+        critical: bool,
+        checked_at: datetime,
+        latency_ms: int,
+        detail: str,
+        metadata: dict[str, object] | None = None,
+    ) -> ProviderHealthCheck:
+        name = provider.strip()
+        message = detail.strip()
+        if not name or len(name) > 100:
+            raise LedgerInvariantError("provider name must contain 1 to 100 characters")
+        if not isinstance(state, ProviderHealthState):
+            raise LedgerInvariantError("provider health state is invalid")
+        if latency_ms < 0:
+            raise LedgerInvariantError("provider health latency must be non-negative")
+        if not message or len(message) > 1000:
+            raise LedgerInvariantError("provider health detail must contain 1 to 1000 characters")
+        checked = as_utc(checked_at, field="checked_at")
+        metadata_payload = metadata or {}
+        metadata_json = _json_text(metadata_payload)
+        check_id = canonical_sha256(
+            {
+                "provider": name,
+                "state": state,
+                "critical": critical,
+                "checked_at": checked,
+                "latency_ms": latency_ms,
+                "detail": message,
+                "metadata_json": metadata_json,
+            }
+        )
+        check = ProviderHealthCheck(
+            check_id=check_id,
+            provider=name,
+            state=state,
+            critical=critical,
+            checked_at=checked,
+            latency_ms=latency_ms,
+            detail=message,
+            metadata=metadata_payload,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO provider_health_checks (
+                    check_id, provider, state, critical, checked_at, latency_ms,
+                    detail, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    check.check_id,
+                    check.provider,
+                    check.state.value,
+                    int(check.critical),
+                    _datetime_text(check.checked_at),
+                    check.latency_ms,
+                    check.detail,
+                    metadata_json,
+                ),
+            )
+        return check
+
+    def latest_provider_health(
+        self, *, as_of: datetime | None = None
+    ) -> tuple[ProviderHealthCheck, ...]:
+        boundary = as_utc(as_of, field="as_of") if as_of is not None else None
+        with self._connect() as connection:
+            if boundary is None:
+                rows = connection.execute(
+                    "SELECT * FROM provider_health_checks ORDER BY checked_at, rowid"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM provider_health_checks
+                    WHERE checked_at <= ? ORDER BY checked_at, rowid
+                    """,
+                    (_datetime_text(boundary),),
+                ).fetchall()
+        latest = {row["provider"]: self._provider_health(row) for row in rows}
+        return tuple(latest[provider] for provider in sorted(latest))
+
+    def transition_alert(
+        self,
+        *,
+        alert_key: str,
+        active: bool,
+        severity: AlertSeverity,
+        message: str,
+        occurred_at: datetime,
+        source_check_id: str | None = None,
+        source_job_run_id: str | None = None,
+        context: dict[str, object] | None = None,
+    ) -> AlertView | None:
+        key = alert_key.strip()
+        detail = message.strip()
+        if not key or len(key) > 200:
+            raise LedgerInvariantError("alert key must contain 1 to 200 characters")
+        if not isinstance(severity, AlertSeverity):
+            raise LedgerInvariantError("alert severity is invalid")
+        if not detail or len(detail) > 1000:
+            raise LedgerInvariantError("alert message must contain 1 to 1000 characters")
+        occurred = as_utc(occurred_at, field="occurred_at")
+        phase = AlertPhase.OPENED if active else AlertPhase.RESOLVED
+        context_payload = context or {}
+        context_json = _json_text(context_payload)
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = connection.execute(
+                """
+                SELECT * FROM alert_events WHERE alert_key = ?
+                ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+                """,
+                (key,),
+            ).fetchone()
+            if latest is None and phase is AlertPhase.RESOLVED:
+                return None
+            if latest is not None:
+                latest_view = self._alert_view(latest)
+                if occurred < latest_view.occurred_at:
+                    raise LedgerInvariantError("alert transition cannot precede its latest event")
+                if latest_view.phase is phase:
+                    return latest_view
+
+            event_id = canonical_sha256(
+                {
+                    "alert_key": key,
+                    "phase": phase,
+                    "severity": severity,
+                    "message": detail,
+                    "occurred_at": occurred,
+                    "source_check_id": source_check_id,
+                    "source_job_run_id": source_job_run_id,
+                    "context_json": context_json,
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO alert_events (
+                    event_id, alert_key, phase, severity, message, occurred_at,
+                    source_check_id, source_job_run_id, context_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    key,
+                    phase.value,
+                    severity.value,
+                    detail,
+                    _datetime_text(occurred),
+                    source_check_id,
+                    source_job_run_id,
+                    context_json,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM alert_events WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            assert row is not None
+            return self._alert_view(row)
+
+    def list_alerts(
+        self,
+        *,
+        active_only: bool = False,
+        as_of: datetime | None = None,
+        limit: int = 100,
+    ) -> tuple[AlertView, ...]:
+        if not 1 <= limit <= 500:
+            raise LedgerInvariantError("alert limit must be between 1 and 500")
+        boundary = as_utc(as_of, field="as_of") if as_of is not None else None
+        with self._connect() as connection:
+            if boundary is None:
+                rows = connection.execute(
+                    "SELECT * FROM alert_events ORDER BY occurred_at, rowid"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM alert_events
+                    WHERE occurred_at <= ? ORDER BY occurred_at, rowid
+                    """,
+                    (_datetime_text(boundary),),
+                ).fetchall()
+        latest = {row["alert_key"]: self._alert_view(row) for row in rows}
+        alerts = sorted(latest.values(), key=lambda item: item.occurred_at, reverse=True)
+        if active_only:
+            alerts = [alert for alert in alerts if alert.active]
+        return tuple(alerts[:limit])
+
+    def record_forward_observation(
+        self,
+        *,
+        trading_date: date,
+        observed_at: datetime,
+        base_decision_id: str,
+        ai_shadow_decision_id: str,
+        benchmark_return: Decimal,
+        base_target_return: Decimal,
+        base_simulated_return: Decimal,
+        ai_shadow_return: Decimal,
+        actual_return: Decimal,
+        transaction_cost_rate: Decimal,
+        metric_payload_sha256: str,
+    ) -> ForwardObservation:
+        observed = as_utc(observed_at, field="observed_at")
+        if trading_date > observed.astimezone(SHANGHAI).date():
+            raise LedgerInvariantError("observation trading date exceeds observed_at")
+        returns = {
+            "benchmark_return": benchmark_return,
+            "base_target_return": base_target_return,
+            "base_simulated_return": base_simulated_return,
+            "ai_shadow_return": ai_shadow_return,
+            "actual_return": actual_return,
+        }
+        for field, value in returns.items():
+            if not value.is_finite() or value < Decimal(-1):
+                raise LedgerInvariantError(f"{field} must be finite and not below -1")
+        if (
+            not transaction_cost_rate.is_finite()
+            or not Decimal(0) <= transaction_cost_rate <= Decimal(1)
+        ):
+            raise LedgerInvariantError("transaction_cost_rate must be in [0, 1]")
+        metric_hash = metric_payload_sha256.strip().lower()
+        if len(metric_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in metric_hash
+        ):
+            raise LedgerInvariantError("metric_payload_sha256 must be a lowercase SHA-256 digest")
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            base = connection.execute(
+                "SELECT * FROM decision_runs WHERE decision_id = ?", (base_decision_id,)
+            ).fetchone()
+            shadow = connection.execute(
+                "SELECT * FROM decision_runs WHERE decision_id = ?", (ai_shadow_decision_id,)
+            ).fetchone()
+            if base is None or shadow is None:
+                raise LedgerNotFoundError("observation decision trace does not exist")
+            if base["portfolio_track"] != PortfolioTrack.BASE.value:
+                raise LedgerInvariantError("observation base decision is not on the base track")
+            if shadow["portfolio_track"] != PortfolioTrack.AI_SHADOW.value:
+                raise LedgerInvariantError(
+                    "observation AI decision is not on the ai_shadow track"
+                )
+            if base["snapshot_id"] != shadow["snapshot_id"]:
+                raise LedgerInvariantError("observation decisions use different snapshots")
+            if trading_date.isoformat() != base["decision_date"]:
+                raise LedgerInvariantError("observation date differs from its base decision")
+            if observed < max(
+                _parse_datetime(base["recorded_at"]), _parse_datetime(shadow["recorded_at"])
+            ):
+                raise LedgerInvariantError("observation precedes its decision trace")
+            source_payloads = tuple(json.loads(base["source_payloads_json"]))
+            if source_payloads != tuple(json.loads(shadow["source_payloads_json"])):
+                raise LedgerInvariantError("observation decisions use different source payloads")
+
+            payload = {
+                "trading_date": trading_date,
+                "observed_at": observed,
+                "base_decision_id": base_decision_id,
+                "ai_shadow_decision_id": ai_shadow_decision_id,
+                **returns,
+                "transaction_cost_rate": transaction_cost_rate,
+                "metric_payload_sha256": metric_hash,
+            }
+            observation_id = canonical_sha256(payload)
+            observation = ForwardObservation(
+                observation_id=observation_id,
+                trading_date=trading_date,
+                observed_at=observed,
+                base_decision_id=base_decision_id,
+                ai_shadow_decision_id=ai_shadow_decision_id,
+                snapshot_id=base["snapshot_id"],
+                base_configuration_id=base["configuration_id"],
+                ai_shadow_configuration_id=shadow["configuration_id"],
+                benchmark_return=benchmark_return,
+                base_target_return=base_target_return,
+                base_simulated_return=base_simulated_return,
+                ai_shadow_return=ai_shadow_return,
+                actual_return=actual_return,
+                transaction_cost_rate=transaction_cost_rate,
+                source_payloads=source_payloads,
+                metric_payload_sha256=metric_hash,
+            )
+            existing = connection.execute(
+                "SELECT * FROM forward_observations WHERE trading_date = ?",
+                (trading_date.isoformat(),),
+            ).fetchone()
+            if existing is not None:
+                existing_observation = self._forward_observation(existing)
+                if existing_observation != observation:
+                    raise LedgerConflictError(
+                        "forward observation date already has different content"
+                    )
+                return existing_observation
+            connection.execute(
+                """
+                INSERT INTO forward_observations (
+                    observation_id, trading_date, observed_at, base_decision_id,
+                    ai_shadow_decision_id, snapshot_id, base_configuration_id,
+                    ai_shadow_configuration_id, benchmark_return, base_target_return,
+                    base_simulated_return, ai_shadow_return, actual_return,
+                    transaction_cost_rate, source_payloads_json, metric_payload_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    observation.observation_id,
+                    observation.trading_date.isoformat(),
+                    _datetime_text(observation.observed_at),
+                    observation.base_decision_id,
+                    observation.ai_shadow_decision_id,
+                    observation.snapshot_id,
+                    observation.base_configuration_id,
+                    observation.ai_shadow_configuration_id,
+                    _decimal_text(observation.benchmark_return),
+                    _decimal_text(observation.base_target_return),
+                    _decimal_text(observation.base_simulated_return),
+                    _decimal_text(observation.ai_shadow_return),
+                    _decimal_text(observation.actual_return),
+                    _decimal_text(observation.transaction_cost_rate),
+                    json.dumps(list(observation.source_payloads), separators=(",", ":")),
+                    observation.metric_payload_sha256,
+                ),
+            )
+            return observation
+
+    def list_forward_observations(
+        self, *, as_of: datetime | None = None
+    ) -> tuple[ForwardObservation, ...]:
+        boundary = as_utc(as_of, field="as_of") if as_of is not None else None
+        with self._connect() as connection:
+            if boundary is None:
+                rows = connection.execute(
+                    "SELECT * FROM forward_observations ORDER BY trading_date, rowid"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM forward_observations WHERE observed_at <= ?
+                    ORDER BY trading_date, rowid
+                    """,
+                    (_datetime_text(boundary),),
+                ).fetchall()
+        return tuple(self._forward_observation(row) for row in rows)
 
     def record_ai_run(
         self,
@@ -1105,7 +1537,7 @@ class SQLiteLedger:
     def _initialize(self) -> None:
         with self._connect() as connection:
             schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if schema_version not in (0, 1, 2, 3):
+            if schema_version not in (0, 1, 2, 3, 4):
                 raise LedgerInvariantError(
                     f"unsupported ledger schema version: {schema_version}"
                 )
@@ -1304,6 +1736,55 @@ class SQLiteLedger:
                     ON ai_messages(proposal_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_ai_messages_run
                     ON ai_messages(run_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS provider_health_checks (
+                    check_id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (
+                        state IN ('healthy', 'degraded', 'unavailable', 'not_configured')
+                    ),
+                    critical INTEGER NOT NULL CHECK (critical IN (0, 1)),
+                    checked_at TEXT NOT NULL,
+                    latency_ms INTEGER NOT NULL CHECK (latency_ms >= 0),
+                    detail TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS alert_events (
+                    event_id TEXT PRIMARY KEY,
+                    alert_key TEXT NOT NULL,
+                    phase TEXT NOT NULL CHECK (phase IN ('opened', 'resolved')),
+                    severity TEXT NOT NULL CHECK (severity IN ('warning', 'critical')),
+                    message TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    source_check_id TEXT REFERENCES provider_health_checks(check_id),
+                    source_job_run_id TEXT REFERENCES job_runs(run_id),
+                    context_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS forward_observations (
+                    observation_id TEXT PRIMARY KEY,
+                    trading_date TEXT NOT NULL UNIQUE,
+                    observed_at TEXT NOT NULL,
+                    base_decision_id TEXT NOT NULL REFERENCES decision_runs(decision_id),
+                    ai_shadow_decision_id TEXT NOT NULL REFERENCES decision_runs(decision_id),
+                    snapshot_id TEXT NOT NULL,
+                    base_configuration_id TEXT NOT NULL,
+                    ai_shadow_configuration_id TEXT NOT NULL,
+                    benchmark_return TEXT NOT NULL,
+                    base_target_return TEXT NOT NULL,
+                    base_simulated_return TEXT NOT NULL,
+                    ai_shadow_return TEXT NOT NULL,
+                    actual_return TEXT NOT NULL,
+                    transaction_cost_rate TEXT NOT NULL,
+                    source_payloads_json TEXT NOT NULL,
+                    metric_payload_sha256 TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_provider_health_name_time
+                    ON provider_health_checks(provider, checked_at);
+                CREATE INDEX IF NOT EXISTS idx_alert_key_time
+                    ON alert_events(alert_key, occurred_at);
                 """
             )
             if schema_version == 1:
@@ -1334,8 +1815,8 @@ class SQLiteLedger:
                     END
                     """
                 )
-            if schema_version < 3:
-                connection.execute("PRAGMA user_version = 3")
+            if schema_version < 4:
+                connection.execute("PRAGMA user_version = 4")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -1673,6 +2154,53 @@ class SQLiteLedger:
                 if latest is not None and latest["result_json"] is not None
                 else None
             ),
+        )
+
+    @staticmethod
+    def _provider_health(row: sqlite3.Row) -> ProviderHealthCheck:
+        return ProviderHealthCheck(
+            check_id=row["check_id"],
+            provider=row["provider"],
+            state=ProviderHealthState(row["state"]),
+            critical=bool(row["critical"]),
+            checked_at=_parse_datetime(row["checked_at"]),
+            latency_ms=int(row["latency_ms"]),
+            detail=row["detail"],
+            metadata=json.loads(row["metadata_json"]),
+        )
+
+    @staticmethod
+    def _alert_view(row: sqlite3.Row) -> AlertView:
+        return AlertView(
+            alert_key=row["alert_key"],
+            phase=AlertPhase(row["phase"]),
+            severity=AlertSeverity(row["severity"]),
+            message=row["message"],
+            occurred_at=_parse_datetime(row["occurred_at"]),
+            source_check_id=row["source_check_id"],
+            source_job_run_id=row["source_job_run_id"],
+            context=json.loads(row["context_json"]),
+        )
+
+    @staticmethod
+    def _forward_observation(row: sqlite3.Row) -> ForwardObservation:
+        return ForwardObservation(
+            observation_id=row["observation_id"],
+            trading_date=date.fromisoformat(row["trading_date"]),
+            observed_at=_parse_datetime(row["observed_at"]),
+            base_decision_id=row["base_decision_id"],
+            ai_shadow_decision_id=row["ai_shadow_decision_id"],
+            snapshot_id=row["snapshot_id"],
+            base_configuration_id=row["base_configuration_id"],
+            ai_shadow_configuration_id=row["ai_shadow_configuration_id"],
+            benchmark_return=Decimal(row["benchmark_return"]),
+            base_target_return=Decimal(row["base_target_return"]),
+            base_simulated_return=Decimal(row["base_simulated_return"]),
+            ai_shadow_return=Decimal(row["ai_shadow_return"]),
+            actual_return=Decimal(row["actual_return"]),
+            transaction_cost_rate=Decimal(row["transaction_cost_rate"]),
+            source_payloads=tuple(json.loads(row["source_payloads_json"])),
+            metric_payload_sha256=row["metric_payload_sha256"],
         )
 
 

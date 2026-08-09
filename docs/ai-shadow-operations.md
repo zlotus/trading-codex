@@ -51,9 +51,9 @@ root 注入 transport，并显式配置预算与 timeout；不能把调用能力
 
 ## 审计与查询
 
-ledger schema v3 增加 `ai_runs` 和 `ai_messages`。两张表与 decision、snapshot、prompt、
-provider/model、usage、cache、结构化提案、验证错误和 AI-shadow decision 建立不可变关联；
-SQLite trigger 拒绝 `UPDATE` 与 `DELETE`。
+ledger schema v4 保留 v3 引入的 `ai_runs` 和 `ai_messages`。两张表与 decision、snapshot、
+prompt、provider/model、usage、cache、结构化提案、验证错误和 AI-shadow decision 建立
+不可变关联；SQLite trigger 拒绝 `UPDATE` 与 `DELETE`。
 
 只读查询：
 

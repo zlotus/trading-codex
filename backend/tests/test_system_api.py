@@ -44,6 +44,7 @@ async def test_system_status_exposes_ready_and_unconfigured_boundaries(
         "realtime_quotes",
         "backtest",
         "ai",
+        "operations",
     }
     states = {component["key"]: component["state"] for component in payload["components"]}
     assert states == {
@@ -53,4 +54,5 @@ async def test_system_status_exposes_ready_and_unconfigured_boundaries(
         "realtime_quotes": "not_configured",
         "backtest": "ready",
         "ai": "not_configured",
+        "operations": "not_configured",
     }

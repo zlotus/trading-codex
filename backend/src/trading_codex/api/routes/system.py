@@ -59,5 +59,11 @@ async def system_status() -> SystemStatusResponse:
                 state="not_configured",
                 detail="受限客户端、AI-shadow fallback 和审计已就绪；尚未接入模型 adapter。",
             ),
+            ComponentStatus(
+                key="operations",
+                label="前瞻运维",
+                state="not_configured",
+                detail="健康门禁、告警、备份、replay 与 60 日报告 contract 已就绪；调度未启用。",
+            ),
         ],
     )

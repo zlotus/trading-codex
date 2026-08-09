@@ -20,6 +20,7 @@ dependencies = [
 trading-codex-api = "trading_codex.main:run"
 trading-codex-data = "trading_codex.data.cli:main"
 trading-codex-ai-research = "trading_codex.ai.research_cli:main"
+trading-codex-ops = "trading_codex.operations.cli:main"
 
 [dependency-groups]
 dev = [
