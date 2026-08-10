@@ -3,8 +3,6 @@ from datetime import UTC, date, datetime
 from types import ModuleType
 from typing import Any
 
-import baostock as bs
-
 from trading_codex.data.models import ProviderBatch, ProviderError
 
 DAILY_FIELDS = (
@@ -41,9 +39,13 @@ class BaoStockClient:
     def __init__(
         self,
         *,
-        module: ModuleType = bs,
+        module: ModuleType | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if module is None:
+            raise ProviderError(
+                "legacy BaoStock adapter is disabled; use trading-codex-baostock fetch"
+            )
         self._module = module
         self._clock = clock or (lambda: datetime.now(UTC))
         self._logged_in = False

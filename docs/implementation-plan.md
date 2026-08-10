@@ -112,6 +112,69 @@
 - 每个观测到的差异都具备可重现的决策和账本轨迹。
 - 扩大任何 AI 权限都需要新增一个已接受的 ADR。
 
+## Milestone 7：BaoStock 外挂下载同步 CLI（已完成）
+
+本里程碑只交付独立的 `trading-codex-baostock` 命令行程序。主应用、回测和现有
+`trading-codex-data` 保持离线；只有新 CLI 的 `fetch` 子命令可以访问 BaoStock。用户提供的
+官方 [blacklist 页面](https://www.baostock.com/blacklist) 给出单 IP 每日 `50,000` 次访问
+上限并禁止并发，2026-08-09 已直接在线核实。页面未定义自然日时区、socket 计数或 QPS，
+因此项目按每个 socket attempt 保守计数；官方黑名单错误 `10001011` 必须硬停止且禁止自动重试。
+
+完整 M7.0-M7.5 contract、目录、预算、命令和恢复语义见
+[`baostock-download-plan.md`](baostock-download-plan.md)，长期安全边界见 ADR-0009；
+ADR-0008 已被取代。
+
+### 交付物
+
+- `doctor`、`plan create/show/freeze`、`status`、`fetch`、`sync`、`verify`、`import-raw`
+  和 `recover` 子命令；除 `fetch` 外全部从代码结构上零网络。
+- 跨进程、跨 manifest、跨 data root 的 global provider lock；从 login 持有到正常 logout，
+  或黑名单路径本地关闭 socket 并完成终态落盘，第二个进程在任何 socket 发送前 fail closed。
+- 不可上调的 provider `50,000/IP/日` 上限、项目 `45,000` 硬上限、默认 `2,000` 自然日和
+  rolling 24-hour 预算、至少 3 秒持久 cooldown，以及 append-before-send attempt ledger。
+- frozen exact-query manifest、有界分页和 session item 数；`fetch` 单进程严格顺序下载
+  immutable raw，不并发、不自动重试、不动态扩展查询范围。
+- 由唯一 `--data-root` 直接指定任意落盘目录；在 login 前检查容量、write、`fsync`、atomic
+  replace 和 `flock`，不识别系统盘/数据盘、mount point 或 UUID。默认目录适配 300 秒
+  `hd-idle` 的 pre-wake 和短会话；raw 到 normalized 的离线 staging/immutable segment、
+  quarantine 和断点恢复。
+- 同一 data root 的 fetch/离线发布/恢复排他锁，以及 content-addressed verify report 和不可覆盖
+  completion receipt。
+- 当前必要 BaoStock endpoint 的固定字段 contract、fake socket fixture、稳定 JSON 状态和
+  操作文档；现有 `sync --fetch-missing` 联网入口移除或永久禁用。
+
+### 验收标准
+
+- provider/page/login/logout/失败 attempt 全部计数；失败和进程崩溃不返还预算，重启、午夜或
+  修改 data root 不能绕过 lock、cooldown、自然日和 rolling 24-hour 门禁。
+- 两个并发 CLI 进程只有一个能在 fake socket 上发送；不存在 `--workers`、后台 daemon、timer
+  或其他网络入口。同公网 IP 下另有 BaoStock 客户端时，操作规程要求停止本 CLI。
+- `10001011` 会持久化为 `provider_blacklisted` 硬停止状态并禁止继续发送 logout；跨日、
+  cooldown 到期或更换 manifest 均不能自动恢复，必须按官方说明联系管理员，并在确认解除后
+  通过不重置预算的追加式人工恢复事件显式开放新会话。
+- cache hit 产生零网络；draft、hash 不匹配、超预算、超页、低空间、state 损坏、schema drift、
+  raw fsync 或 normalized 冲突全部 fail closed。
+- `plan/status/sync/verify/doctor` 的单元测试证明无法登录；离线重复同步 deterministic，segment
+  中断不破坏已发布数据。
+- 完整测试和 lint 通过后，最多执行一个由用户明确批准的 `--max-items 1` schema pilot，并保存
+  全部 socket attempt 与 raw hash。未执行 pilot 时只能标记 `live_pilot_pending`。
+- M7 完成只表示 CLI 可安全使用，不表示历史数据已补齐、M4 已关闭或 M6 可启动。
+
+M7.0-M7.5 已完成。2026-08-10 在 `/mnt/exos_1t/quant/baostock` 执行了 30 秒间隔、
+`--max-items 1` 的真实 pilot：4 次 socket attempt 全部成功，3,644 行前复权日线完成 immutable
+raw、normalized segment、逐行 verify 和 completion receipt。异卷 backup target 仍是任何 M8
+bulk wave 的前置门禁，不属于 M7 单项 pilot 的完成声明。
+
+## 拟议 Milestone 8：真实回填与 OOS 验收
+
+使用 M7 CLI 执行预先冻结的日期、universe、train/validation/test manifest，依次补齐批量
+日线与因子、历史指数成分、provider `adjustflag=2/3` 双价格、09:35 五分钟数据和 corporate
+action；随后完全离线运行质量门禁、RQAlpha 对账和 walk-forward，生成 immutable OOS bundle。
+
+API 优先级、数据 schema、M8.0-M8.5 切片和完成边界见
+[`baostock-data-plan.md`](baostock-data-plan.md)。M8 报告经人工审阅前，M4 保持未完成，M6
+timer、forward observation 和 live AI proposal 均不得启动。
+
 ## 延后事项
 
 - Qlib 机器学习因子模型。

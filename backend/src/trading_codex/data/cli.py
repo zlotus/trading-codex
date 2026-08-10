@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_codex.data.cached_client import CachedBaoStockClient
-from trading_codex.data.models import CacheMissError, RequestBudgetExceeded
+from trading_codex.data.models import CacheMissError
 from trading_codex.data.parquet_store import ParquetDataStore
 from trading_codex.data.quality import (
     assess_opening_0935_coverage,
@@ -25,14 +25,27 @@ def main(argv: list[str] | None = None) -> None:
     normalized_store = ParquetDataStore(data_root / "normalized")
 
     if args.command == "sync":
+        if args.fetch_missing:
+            print(
+                json.dumps(
+                    {
+                        "status": "blocked",
+                        "reason": (
+                            "legacy BaoStock network access is permanently disabled; "
+                            "use a frozen trading-codex-baostock fetch manifest"
+                        ),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
         codes = _codes(args.codes)
         raw_store = ImmutableRawStore(data_root / "raw")
         pipeline = IngestionPipeline(raw_store, normalized_store)
         client = CachedBaoStockClient(
             raw_store,
-            allow_network=args.fetch_missing,
-            max_upstream_requests=args.max_upstream_requests,
-            minimum_request_interval=args.minimum_request_interval,
         )
         try:
             report = BaoStockSyncService(client, pipeline).sync(
@@ -42,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
                 include_five_minute_bars=args.with_five_minute,
                 include_forward_adjusted_daily=args.with_forward_adjusted_daily,
             )
-        except (CacheMissError, RequestBudgetExceeded) as exc:
+        except CacheMissError as exc:
             print(
                 json.dumps(
                     {
@@ -130,16 +143,8 @@ def _parser() -> argparse.ArgumentParser:
     sync.add_argument(
         "--fetch-missing",
         action="store_true",
-        help="allow upstream access for cache misses; disabled by default",
+        help="deprecated compatibility flag; always exits without network access",
     )
-    sync.add_argument(
-        "--max-upstream-requests",
-        type=int,
-        choices=(0, 1),
-        default=1,
-        help="hard-capped at one upstream data request per process",
-    )
-    sync.add_argument("--minimum-request-interval", type=float, default=3.0)
 
     quality = commands.add_parser("quality", help="validate normalized datasets")
     quality.add_argument("--as-of", type=_datetime, default=datetime.now(UTC))

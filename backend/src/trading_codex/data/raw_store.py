@@ -50,9 +50,12 @@ class ImmutableRawStore:
             try:
                 with path.open("xb") as artifact_file:
                     artifact_file.write(payload)
+                    artifact_file.flush()
+                    os.fsync(artifact_file.fileno())
             except FileExistsError:
                 artifact = self._read_verified(path, content_sha256)
             else:
+                _fsync_directory(path.parent)
                 artifact = RawArtifact(
                     path=path,
                     relative_path=path.relative_to(self.root).as_posix(),
@@ -70,25 +73,92 @@ class ImmutableRawStore:
         operation: str,
         query: dict[str, str],
     ) -> ProviderBatch | None:
+        cached = self.lookup_with_artifact(
+            source=source,
+            operation=operation,
+            query=query,
+        )
+        return cached[0] if cached is not None else None
+
+    def lookup_with_artifact(
+        self,
+        *,
+        source: str,
+        operation: str,
+        query: dict[str, str],
+    ) -> tuple[ProviderBatch, RawArtifact] | None:
         key = self.query_key(source=source, operation=operation, query=query)
         index_path = self._index_path(source, operation, key)
         if index_path.exists():
             try:
-                index = json.loads(index_path.read_bytes())
+                raw_index = index_path.read_bytes()
+                index = json.loads(raw_index)
+                if not isinstance(index, dict) or raw_index != _canonical_json(index):
+                    raise TypeError("raw query index must be a canonical object")
+                if set(index) != {
+                    "schema_version",
+                    "source",
+                    "operation",
+                    "query",
+                    "content_sha256",
+                    "raw_artifact",
+                }:
+                    raise TypeError("raw query index fields differ from the contract")
+                if (
+                    index.get("schema_version") != 1
+                    or isinstance(index.get("schema_version"), bool)
+                    or index.get("source") != source
+                    or index.get("operation") != operation
+                    or index.get("query") != query
+                ):
+                    raise TypeError("raw query index identity differs from the contract")
                 relative_path = index["raw_artifact"]
                 expected_sha256 = index["content_sha256"]
-            except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                if (
+                    not isinstance(relative_path, str)
+                    or not isinstance(expected_sha256, str)
+                    or len(expected_sha256) != 64
+                ):
+                    raise TypeError("raw query index address is invalid")
+            except (
+                KeyError,
+                TypeError,
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+            ) as exc:
                 raise RawIntegrityError(f"invalid raw query index: {index_path}") from exc
             path = self._resolve_artifact(relative_path)
-            envelope, _ = self._load_verified(path, expected_sha256)
-            return self._batch_from_envelope(envelope, source, operation, query)
+            envelope, artifact = self._load_verified(path, expected_sha256)
+            return self._batch_from_envelope(envelope, source, operation, query), artifact
 
         cached = self._scan_for_query(source=source, operation=operation, query=query)
         if cached is None:
             return None
         batch, artifact = cached
         self._write_query_index(batch, artifact)
-        return batch
+        return batch, artifact
+
+    def iter_verified(self, *, source: str) -> list[tuple[ProviderBatch, RawArtifact]]:
+        directory = self.root / source
+        if not directory.exists():
+            return []
+        verified = []
+        for path in sorted(directory.glob("*/*.json")):
+            operation = path.parent.name
+            envelope, artifact = self._load_verified(path, path.stem)
+            query = envelope.get("query")
+            if not isinstance(query, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in query.items()
+            ):
+                raise RawIntegrityError(f"invalid raw artifact query: {path}")
+            verified.append(
+                (
+                    self._batch_from_envelope(envelope, source, operation, query),
+                    artifact,
+                )
+            )
+        return verified
 
     @staticmethod
     def query_key(*, source: str, operation: str, query: dict[str, str]) -> str:
@@ -103,21 +173,48 @@ class ImmutableRawStore:
         self, path: Path, expected_sha256: str
     ) -> tuple[dict[str, Any], RawArtifact]:
         try:
-            envelope = json.loads(path.read_bytes())
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise RawIntegrityError(f"cannot read raw artifact: {path}") from exc
+        try:
+            envelope = json.loads(raw)
+            if not isinstance(envelope, dict):
+                raise TypeError("raw artifact envelope must be an object")
+            if raw != _canonical_json(envelope):
+                raise TypeError("raw artifact envelope must be canonical JSON")
+            if set(envelope) != {
+                "schema_version",
+                "source",
+                "operation",
+                "query",
+                "fields",
+                "rows",
+                "content_sha256",
+                "received_at",
+            }:
+                raise TypeError("raw artifact fields differ from the contract")
+            if envelope.get("schema_version") != 1 or isinstance(
+                envelope.get("schema_version"), bool
+            ):
+                raise TypeError("raw artifact schema version is invalid")
             recorded_sha256 = envelope.pop("content_sha256")
             received_at = envelope.pop("received_at")
-        except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise RawIntegrityError(f"invalid raw artifact: {path}") from exc
 
         actual_sha256 = hashlib.sha256(_canonical_json(envelope)).hexdigest()
         if recorded_sha256 != expected_sha256 or actual_sha256 != expected_sha256:
             raise RawIntegrityError(f"raw artifact content hash mismatch: {path}")
 
+        try:
+            parsed_received_at = _parse_timestamp(received_at)
+        except (TypeError, ValueError) as exc:
+            raise RawIntegrityError(f"invalid raw artifact timestamp: {path}") from exc
         artifact = RawArtifact(
             path=path,
             relative_path=path.relative_to(self.root).as_posix(),
             content_sha256=expected_sha256,
-            received_at=_parse_timestamp(received_at),
+            received_at=parsed_received_at,
         )
         envelope["content_sha256"] = expected_sha256
         envelope["received_at"] = received_at
@@ -192,7 +289,10 @@ class ImmutableRawStore:
             ) as handle:
                 temporary_path = Path(handle.name)
                 handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(temporary_path, path)
+            _fsync_directory(path.parent)
         finally:
             if temporary_path is not None and temporary_path.exists():
                 temporary_path.unlink()
@@ -205,3 +305,11 @@ class ImmutableRawStore:
         if not path.is_relative_to(self.root.resolve()):
             raise RawIntegrityError("raw query index points outside the raw store")
         return path
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

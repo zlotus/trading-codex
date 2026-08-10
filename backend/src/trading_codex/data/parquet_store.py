@@ -33,15 +33,60 @@ class ParquetDataStore:
     def read(self, dataset: str) -> pa.Table:
         spec = self._spec(dataset)
         path = self.path_for(dataset)
-        if not path.exists():
+        paths = ([path] if path.exists() else []) + self.segment_paths(dataset)
+        if not paths:
             return pa.Table.from_pylist([], schema=spec.schema)
-        table = pq.read_table(path, schema=spec.schema)
-        if table.schema != spec.schema:
-            raise DataValidationError(f"schema mismatch for normalized dataset {dataset}")
+        tables = []
+        for current in paths:
+            try:
+                physical_schema = pq.read_schema(current)
+            except (pa.ArrowException, OSError) as exc:
+                raise DataValidationError(
+                    f"cannot read normalized dataset {dataset}: {current}"
+                ) from exc
+            if physical_schema != spec.schema:
+                raise DataValidationError(
+                    f"schema mismatch for normalized dataset {dataset}: {current}"
+                )
+            try:
+                table = pq.read_table(current)
+            except (pa.ArrowException, OSError) as exc:
+                raise DataValidationError(
+                    f"cannot read normalized dataset {dataset}: {current}"
+                ) from exc
+            if table.schema != spec.schema:
+                raise DataValidationError(
+                    f"schema mismatch for normalized dataset {dataset}: {current}"
+                )
+            tables.append(table)
+        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        if table.num_rows:
+            table = table.sort_by([(key, "ascending") for key in spec.keys])
+            keys = [self._key(row, spec) for row in table.to_pylist()]
+            if len(keys) != len(set(keys)):
+                raise DataValidationError(
+                    f"duplicate business keys in normalized dataset {dataset}"
+                )
         return table
+
+    def segment_path(self, dataset: str, segment_id: str) -> Path:
+        self._spec(dataset)
+        if not segment_id or any(character not in "0123456789abcdef" for character in segment_id):
+            raise ValueError("segment_id must contain lowercase hexadecimal characters")
+        return self.root / ".segments" / dataset / f"{segment_id}.parquet"
+
+    def segment_paths(self, dataset: str) -> list[Path]:
+        self._spec(dataset)
+        directory = self.root / ".segments" / dataset
+        return sorted(directory.glob("*.parquet")) if directory.is_dir() else []
 
     def merge(self, dataset: str, rows: Iterable[dict[str, Any]]) -> MergeResult:
         spec = self._spec(dataset)
+        if self.segment_paths(dataset):
+            raise DataValidationError(
+                f"normalized dataset {dataset} uses manifest segments; "
+                "publish through trading-codex-baostock sync"
+            )
         incoming_rows = list(rows)
         if not incoming_rows:
             total = self.read(dataset).num_rows
