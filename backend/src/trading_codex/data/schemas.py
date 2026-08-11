@@ -64,6 +64,18 @@ DATASET_SPECS = {
         ),
         keys=("snapshot_date", "code"),
     ),
+    "index_memberships": DatasetSpec(
+        name="index_memberships",
+        schema=_schema(
+            [
+                pa.field("snapshot_date", pa.date32(), nullable=False),
+                pa.field("index_code", pa.string(), nullable=False),
+                pa.field("member_code", pa.string(), nullable=False),
+                pa.field("member_name", pa.string(), nullable=False),
+            ]
+        ),
+        keys=("snapshot_date", "index_code", "member_code"),
+    ),
     "daily_bars": DatasetSpec(
         name="daily_bars",
         schema=_schema(

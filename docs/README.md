@@ -7,6 +7,12 @@
 - [`progress.md`](progress.md)：简洁的当前状态和交接快照。
 - [`ledger-operations.md`](ledger-operations.md)：append-only 账本、人工成交和三轨对账操作。
 - [`regime-evaluation.md`](regime-evaluation.md)：市场状态、策略切换和 walk-forward 评估 contract。
+- [`baostock-download-plan.md`](baostock-download-plan.md)：Milestone 7 独立
+  raw-only 下载器、请求生成、envelope、官方请求上限和幂等 contract。
+- [`baostock-download-operations.md`](baostock-download-operations.md)：JSONL 请求、顺序下载、
+  断点续传和离线 inspect/ingest 操作手册。
+- [`baostock-data-plan.md`](baostock-data-plan.md)：Milestone 8 的 BaoStock API
+  优先级、真实回填、数据消费路径和 OOS 验收计划。
 - [`ai-shadow-operations.md`](ai-shadow-operations.md)：受限 LLM 客户端、AI-shadow、审计和
   隔离研究数据 contract。
 - [`forward-operations.md`](forward-operations.md)：一次性调度、provider health、告警、

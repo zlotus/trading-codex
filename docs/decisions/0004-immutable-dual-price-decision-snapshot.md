@@ -4,6 +4,8 @@
 - 日期：2026-08-08
 - 取代：无
 - 被取代：无
+- 后续变更：双价格决策 contract 仍有效；下文原有的“单进程最多一次上游请求”门禁已由
+  [ADR-0010](0010-unix-style-raw-baostock-pipeline.md) 的全局串行 raw 下载边界取代。
 
 ## 背景
 
@@ -45,8 +47,8 @@ Milestone 2 需要让历史 replay 与后续日常决策使用同一套特征、
 
 ## 后果
 
-- 形成决策前，本地 cache 必须同时具备精确匹配的前复权和不复权日线。前复权同步
-  仍需显式 opt-in，并继续遵守单进程最多一次 BaoStock 上游请求的硬限制。
+- 形成决策前，本地 cache 必须同时具备精确匹配的前复权和不复权日线。前复权需求
+  仍需显式 opt-in；实际回源只允许经过 ADR-0010 定义的全局串行 raw 下载边界。
 - 当前真实样本尚未验证前复权轨和 corporate action 映射；Milestone 2 的因果性与
   交易约束由合成 fixture 验证，不能表述为实盘数据验证。
 - `DecisionSnapshot` 目前是内存 contract；持久化 decision run、订单意图和三条组合

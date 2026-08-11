@@ -1,13 +1,16 @@
 # 项目进度
 
-最后审阅：2026-08-09
+最后审阅：2026-08-11
 
 ## 当前里程碑
 
-Milestone 4 的真实 OOS 证据仍待补齐；Milestone 5 和 Milestone 6 运维内核的代码 contract
-与合成验收已实现。M6 现在具备 health gate、告警、并发 attempt lease、一致性备份、replay
-和 60 日归因门槛，但没有 daily task composition、外部 timer、notification adapter 或真实
-前瞻 observation。M4 未关闭前不能启动 Milestone 6 前瞻运行，当前进度为 0/60 个交易日。
+Milestone 7 已按 ADR-0010 收缩为 Unix 风格 raw 工具链：Trading Codex 生成 JSONL exact request，
+下载器存在即跳过、严格串行落 envelope，离线工具独立 inspect/ingest。Milestone 8 的默认基础
+数据回填 M8.0 已完成：800 个标的 2011-01-01 至 2026-08-10 双价格 raw 已下载并通过 envelope inspect；
+停牌空成交量和 BaoStock 行级复权标记偏差已修复，M8.0 干净重建、逐 segment 验收和完整读取
+性能测量均已完成。下一步是 M8.1 固定 universe EOD smoke runner。Milestone 4 的正式 OOS 证据
+仍待补齐；M5/M6 代码 contract 已实现，但 M4 未关闭前不能启动 M6 前瞻运行，当前 observation
+为 0/60。
 
 ## 当前基线
 
@@ -18,8 +21,25 @@ Milestone 4 的真实 OOS 证据仍待补齐；Milestone 5 和 Milestone 6 运�
   接收时间 provenance，以及显式 `as_of` 查询。
 - instrument、交易日历、历史 universe、日线、复权因子和 5 分钟数据适配；停牌和
   ST 状态保存在规范化日线中，corporate action 使用独立 schema。
-- 默认完全离线的同步命令。只有 `--fetch-missing` 可以回源，且每个进程硬限制最多
-  尝试 1 次上游数据请求；失败尝试也消耗预算。
+- `trading-codex-requirements` 可生成指数成分请求和固定沪深300/中证500并集的 15 年双价格日线
+  JSONL；`trading-codex-baostock` 是唯一 live entrypoint，主应用、回测、scheduler 和
+  `trading-codex-data` 均不能回源。
+- 下载器只暴露 `--data-root` 和 `--requests`，不再要求 doctor、manifest、状态确认、空间估算、
+  backup target、sync 或 verify。目标 query-addressed raw 文件存在就零网络跳过。
+- 本机 XDG state 只保留全局非阻塞 `flock` 和按上海自然日追加的 attempt JSONL；每个底层 socket
+  send 发送前计数，官方上限 50,000，默认 40,000 次停止，无 rolling/session/item/cooldown。
+- raw 使用 canonical JSON envelope，保存 exact query、字段、原始行、接收时间、payload hash 和
+  覆盖全部元数据的 envelope hash；新文件在发布前验证 bytes，以临时文件、`fsync`、atomic
+  replace 发布，并由下载器从磁盘重新读取自检。
+- `trading-codex-data inspect-raw` 与 `ingest-raw` 不信任下载结果，分别重新验证 envelope；ingest
+  按 payload hash 幂等发布 normalized segment，跨 payload 业务键冲突拒绝发布，坏文件只报告
+  warning 且绝不触发网络。两者逐文件流式验证，不再一次性持有全部 raw envelope。
+- ADR-0008/0009 的 manifest/SQLite/offline 实现仅保留为已有 pilot 兼容路径，不再由公开下载
+  entrypoint 暴露，也不作为 M8 正常操作流程。
+- 日线 exact query 接受完整显式日期区间，15 年范围不被任意切断；pagination 作为真实 socket
+  send 自动计数。五分钟数据继续按最多 31 个自然日的 endpoint contract 输入。
+- normalized `PRICE` 保持 `decimal128(20,6)`；BaoStock 更高精度价格在 normalizer 中使用固定
+  `ROUND_HALF_EVEN` 显式量化，immutable raw 仍保留 provider 返回的完整小数。
 - 数据质量与 09:35 覆盖报告，以及通过 ARM64 验证的 RQAlpha 6.3.0 日频窄适配器。
 - ADR-0003 已接受 RQAlpha 作为可替换的回测执行适配器；策略、风险和人工成交仍不
   依赖 RQAlpha。
@@ -63,8 +83,8 @@ Milestone 4 的真实 OOS 证据仍待补齐；Milestone 5 和 Milestone 6 运�
   execution planner，并强制匹配 base pipeline `configuration_id`，任何失败保持 base 不变。
 - 离线研究 runner 验证 train/validation/test 独立目录、非重叠日期和完整 artifact hash；
   candidate freeze 前不会向开发阶段暴露 test descriptor。
-- BaoStock 前复权日线是显式 opt-in，使用独立 exact-query cache key；默认离线和
-  单进程最多一次上游请求的门禁没有放宽。
+- BaoStock 前复权日线仍是显式 opt-in，并使用独立 exact-query cache key；主应用、回测、
+  scheduler 和旧数据 CLI 均不能回源。
 - `/api/v1/system/status` 保持 `research` mode，历史数据、决策内核、账本和回测边界
   已就绪；实时行情与模型 adapter 仍未配置，AI 核心不会因此伪报为可运行。
 - `OneShotDailyScheduler` 只处理当前交易日 09:35/15:30 窄窗口，并在 task 前强制 critical
@@ -75,20 +95,18 @@ Milestone 4 的真实 OOS 证据仍待补齐；Milestone 5 和 Milestone 6 运�
 
 ## 进行中
 
-M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 live AI 提案；M6 没有已
-安装的 timer、真实 daily task、远程通知或 observation。当前也没有运行中的 BaoStock 获取
-任务，扩样仍必须人工、串行，遵守每进程最多一次上游请求的门禁。
+M8.0 已完成。外置盘包含 1,606 个有效 envelope；当前 normalized 有 1,600 个 exact 日线 segment、
+800 个标的和双轨各 2,486,649 行，另有 8,887 个 instruments、5,701 个 calendar rows 和 800 个
+index memberships。全部 exact artifact 来源、schema、payload filename hash、单 segment 日期唯一性
+和双轨日期配对均通过。M4 的真实数据 smoke 和正式 OOS 都未完成；M5 没有 live AI 提案；M6 没有
+已安装的 timer、真实 daily task、远程通知或 observation。
 
 ## 下一步
 
-1. 设计并人工补齐足够长的 `adjustflag=2/3` 日线、历史 universe 和 09:35 状态样本；先
-   明确训练、验证、测试日期，不能为了已有结果回填测试区间。
-2. 用真实 replay 生成多组版本化参数的 `EvaluationPeriod`，产出并审阅首份扣费 OOS
-   报告；若覆盖、成交成本或统计证据不足，继续 fail closed。
-3. 报告通过后校准状态阈值、迟滞和换手上限，提升配置版本并重跑完整 walk-forward；
-   关闭 M4 后再选择 provider adapters，组合真实 daily tasks，完成备份/replay 与告警送达
-   演练，再安装外部 timer 并从只写 base/`ai_shadow` 的 dry-run 开始。审计不完整时保持
-   `not_configured`，不能扩大 AI 权限。
+1. 为 M8.1 增加不会按决策日重复执行全表 Python 化的有界日线读取路径。
+2. 增加显式 `survivorship_bias=true` 的固定 universe EOD smoke runner，运行默认 252/63
+   walk-forward 并记录真实耗时、内存和结果 artifact。
+3. 补 point-in-time universe、benchmark、corporate action 和必要的 09:35 数据，再生成正式 OOS。
 
 ## 风险与限制
 
@@ -96,11 +114,10 @@ M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 
   标的日；样本内覆盖为 95/95，不能外推为全市场或全历史覆盖。
 - 当前真实样本的 adjustment factor 和 corporate action 规范化表为空。送股账务仅由
   合成 RQAlpha fixture 验证，真实 provider 映射仍需独立样本。
-- 当前真实 normalized 日线尚未缓存 `adjustflag=2` 前复权轨，因此不能从该样本构建
-  可执行决策快照。补样本必须显式 opt-in，且每次只处理一个 exact-query cache miss。
-- 2026-08-08 只读复核显示日线共 97 行、19 个标的且全部为 `adjustflag=3`；五分钟数据
-  共 4,656 行。该样本不满足 20 日双价格状态快照，更不满足默认 252/63 walk-forward
-  训练/测试窗，当前没有真实绩效结论。
+- BaoStock 有 2 个标的日同时返回 `tradestatus=0` 和正成交量，且前复权/不复权双轨一致；当前执行
+  逻辑保守视为不可交易。这 4 个轨道行应保留为后续质量报告中的上游语义 warning。
+- 仓库原有样本仍只有 97 行、19 个标的且全部为 `adjustflag=3`，五分钟数据共 4,656 行；它与
+  外置 pilot 尚未形成完整 M4 数据集，更不满足默认 252/63 walk-forward 训练/测试窗。
 - 新账本默认从零现金开始，必须先通过 actual cash movement API 追加初始资金；目前
   Web 尚未提供现金变动表单。
 - 当前没有成交纠错 endpoint。发现错误 fill 时不能修改数据库，必须等待显式补偿事件
@@ -113,25 +130,58 @@ M4 的真实数据评估尚未完成。M5 没有运行中的 provider 调用或 
   存在的 append-only 运行记录，不提供触发运行、审批成交或修改风险配置的入口。
 - 研究 runner 防止正常流程在 candidate freeze 前获得 test descriptor；执行不可信研究
   代码时仍需使用独立用户、容器或只读 mount 施加操作系统级权限隔离。
-- BaoStock 免费 endpoint 存在封 IP 风险。扩展本地样本时必须人工、串行、一次只补
-  一个 cache miss，不能使用批量循环或并发回源。
+- BaoStock 免费 endpoint 存在封 IP 风险。CLI 无法发现同一 NAT 下的其他客户端；任何下载都
+  必须串行、无 timer/并发/自动重试，无法协调公网 IP 时停止运行。40,000 次仅是本项目停止线，
+  不能统计其他机器的流量。
+- 下载器不做空间预测；真实写盘失败会停止，但可能已经消耗该请求。backup target 未确定不再
+  阻止下载，raw 完成后的备份仍是独立运维责任。
+- `query_history_k_data_plus` 已完成 800 标的双价格真实批量验证；复权因子、5 分钟和 dividend
+  endpoint 仍只有 fake fixture。Dividend 缺少日内公告时间，当前 `available_at` 保守使用公告日
+  后一个自然日 00:00。
+- 800 标的双价格共有 4,973,298 行；当前硬件上完整 `ParquetDataStore.read` 耗时 16:43.49、峰值
+  RSS 约 12.3 GiB。它可作为一次性完整性检查，但不能由 walk-forward 每个决策日重复调用；M8.1
+  需要有界 Arrow/DuckDB 读取或等价的一次加载、多日复用路径。
 - RQAlpha 当前固定为 6.3.0 并隔离运行。用途变为商业场景或升级版本前，需要重新
   核对源码许可说明和全部 adapter fixture。
 
 ## 验证
 
-- 2026-08-09：`.venv/bin/pytest` 通过，85 个测试；除 M1-M5 原有覆盖外，M6 新增 critical
-  provider fail-closed、alert 恢复、并发 lease、超时重试、交易日窗口、schema v1→v4、
-  append-only 运维事件、备份篡改、point-in-time replay、observation trace、59/60 日门槛和
-  只读 operations API 测试。
-- 2026-08-09：`.venv/bin/ruff check .` 通过。
+- 2026-08-11：固定 2024-06-07 沪深300/中证500并集的 1,602 条请求全部下载；exact request
+  目标文件为 1,602/1,602，缺失 0。`inspect-raw` 只读校验外置盘 1,606/1,606 个 envelope，
+  `warnings=[]`、`network_access=false`，raw 约 1.3 GB。
+- 2026-08-11：首次真实 ingest 耗时 8:24.24、峰值 RSS 6,217,456 KB、无 swap，发布 1,362 个
+  日线 segment、4,220,049 行。缺口定位为 BaoStock 停牌行空 `volume`，以及 6 个前复权请求中
+  3,994 行返回 `adjustflag=3`；这些偏差未修改 immutable raw。
+- 2026-08-11：修复后的 1,600 条日线 raw 流式 dry-run 得到 800 个标的、双轨各 2,486,649 行、
+  总计 4,973,298 行、110,614 个停牌轨道行、3,516 个空成交量归零，日期不配对标的为 0；耗时
+  5:41.47、峰值 RSS 135,680 KB、无网络和写盘。`.venv/bin/pytest -q` 通过 154 个测试，
+  `.venv/bin/ruff check .` 与 `git diff --check` 通过。
+- 2026-08-11：修复后干净 ingest 得到 `valid_raw_files=1606`；日线发布 1,600 个 segment、
+  4,973,298 行，instruments 8,887 行、trade calendar 5,701 行、index memberships 800 行。
+  仅两份旧 `sh.600000` pilot 因业务键重叠跳过；耗时 10:08.64、峰值 RSS 1,049,804 KB、无网络。
+- 2026-08-11：逐 segment 独立检查得到 1,600/1,600 exact artifact、800 个双轨日期完全配对，
+  0 missing/unexpected artifact、0 schema/hash/重复日期错误。完整 `ParquetDataStore.read("daily_bars")`
+  成功读取 4,973,298 行、19 列并通过全局重复键检查；耗时 16:43.49、峰值 RSS 12,897,108 KB。
+- 2026-08-10：真实 `doctor --initialize` 在 `/mnt/exos_1t/quant/baostock` 通过；目标盘约
+  1 TB、剩余约 183 GB，global state `integrity=ok` 且 16 个 append-only trigger 完整。
+- 2026-08-10：manifest `bs-af5dfdaa19fc5c6ae075` 以 30 秒间隔完成 `login/query/page/logout`
+  共 4 次成功 attempt，无 incident；raw hash `2b48d48e...808a9` 保存 3,644 行。
+- 2026-08-10：真实 sync 发布 196,191-byte 日线 segment；逐行 verify 得到 0 duplicate、0 missing、
+  0 mismatch、0 quarantine，并写入内容 hash 报告 `052d9a1c...f3b78` 和不可变 completion receipt。
+- 2026-08-10：`.venv/bin/pytest -q` 通过，150 个测试；包含 M1-M6 原有覆盖、旧 M7 pilot 兼容，
+  以及简化下载器的严格串行、文件存在零网络、首错停止/续传、自然日边界、`10001011`、v2
+  envelope 完整地址与篡改检测、下载/ingest 独立复验、跨 payload 重复键拒绝和幂等 segment。
+- 2026-08-10：`.venv/bin/ruff check .`、`UV_CACHE_DIR=/tmp/trading-codex-uv-cache
+  uv lock --check`、Markdown 本地链接检查与 `git diff --check` 通过。
 - 2026-08-09：`pnpm --dir web build` 通过，Vite 6.4.3。
-- 2026-08-09：`UV_CACHE_DIR=/tmp/trading-codex-uv-cache uv lock --check` 通过，锁文件与
-  项目依赖一致。
 - 2026-08-09：`PYTHONPATH=backend/src .venv/bin/python -m
   trading_codex.ai.research_cli --help` 通过，隔离研究 CLI 入口可用。
 - 2026-08-09：`PYTHONPATH=backend/src .venv/bin/python -m
   trading_codex.operations.cli --help` 通过，备份、校验、replay 和前瞻报告入口可用。
+- 2026-08-10：简化后的公开 `trading-codex-baostock --help` 只暴露 `--data-root` 和
+  `--requests`；help 导入不加载 provider，真实 downloader 导入也不加载旧 manifest 或 PyArrow。
+- 2026-08-09：`ImmutableRawStore.iter_verified(source="baostock")` 只读校验现有
+  `data/raw` 的 70 个 raw artifact 全部通过，可进入后续离线 import pilot。
 - 2026-08-09：Chromium 132.0.6834.159 使用合成 AI-shadow ledger 检查 1440×1000 和
   390×844 CSS viewport；摘要、提案、对话 panel 无重叠，移动端 document width 为
   390px，720px 信号表仅在局部 `.table-scroll` 内横向滚动。

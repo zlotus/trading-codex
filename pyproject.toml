@@ -19,6 +19,8 @@ dependencies = [
 [project.scripts]
 trading-codex-api = "trading_codex.main:run"
 trading-codex-data = "trading_codex.data.cli:main"
+trading-codex-baostock = "trading_codex.baostock_download.download_cli:main"
+trading-codex-requirements = "trading_codex.data.requirements_cli:main"
 trading-codex-ai-research = "trading_codex.ai.research_cli:main"
 trading-codex-ops = "trading_codex.operations.cli:main"
 

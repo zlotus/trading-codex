@@ -114,8 +114,8 @@ metric 和 source payload hash，便于逐日 replay。
 ## 启用前检查
 
 1. 先关闭 M4：补齐预先划分的真实数据并通过扣费 OOS 与敏感性审阅。
-2. 接入实时行情与必要 provider probes，明确哪些是 critical；BaoStock 回源继续遵守人工、
-   串行、每进程最多一次请求的限制。
+2. 接入实时行情与必要 provider probes，明确哪些是 critical；BaoStock 只允许通过 M7 raw-only
+   JSONL CLI 全局串行补历史数据，不能充当 M6 实时行情 provider。
 3. 组合真实 EOD 与 09:35 task，证明所有数据查询使用显式 `as_of`，并在测试账本完成中断、
    并发、lease 超时和 retry 演练。
 4. 先创建并 replay 一份生产账本备份，再安装外部 timer；从只写 base / AI-shadow 的受控

@@ -112,6 +112,49 @@
 - 每个观测到的差异都具备可重现的决策和账本轨迹。
 - 扩大任何 AI 权限都需要新增一个已接受的 ADR。
 
+## Milestone 7：BaoStock raw 下载工具链（已完成）
+
+本里程碑交付 ADR-0010 定义的 Unix 风格边界：`trading-codex-requirements` 生成 JSONL exact
+request，`trading-codex-baostock` 只顺序下载 raw envelope，`trading-codex-data` 独立检查和
+预处理。主应用、回测和 scheduler 保持离线。
+
+### 交付物
+
+- 跨 data root 的全局非阻塞 `flock`；一个 login session 内严格顺序，无并发或自动重试。
+- 每个底层 socket send 在发送前写入按上海自然日分文件的文本计数；官方上限 50,000，默认
+  40,000 次停止。
+- exact request 决定 raw 目标路径；文件存在直接跳过，重新运行同一命令就是断点续传。
+- versioned canonical JSON envelope、payload/envelope SHA-256、临时文件、`fsync`、atomic
+  replace 和下载端落盘前后自检。
+- 独立 `inspect-raw` 和 `ingest-raw` 再次验证 envelope，并按 payload hash 幂等发布 normalized
+  segment；跨 payload 业务键冲突拒绝发布，坏 raw 只报告 warning，不触发网络请求。
+- 下载器不再包含空间预测、mount/UUID 识别、backup 门禁、manifest 状态机或 normalized 验收。
+- 旧 `trading-codex-data --fetch-missing` 永久阻断网络；已有 M7 pilot raw/segment 保持可读。
+
+### 验收标准
+
+- 两个进程只有一个能发送；目标文件存在时为零网络。
+- 首错停止且无自动重试；中断后重跑只补缺失目标。
+- 达到日边界返回暂停，次日继续；`10001011` 写 marker 并硬停止。
+- 下载端和预处理端各自能发现 envelope 损坏，不能传递信任。
+- 下载进程只创建 raw；normalized、quality、回测和备份由独立工具完成。
+- M7 验收本身不证明基础数据回填、M4 OOS 或 M6 启用条件已经完成。
+
+2026-08-10 的旧 manifest pilot 已实际取得单证券双价格各 3,644 行，以及沪深300/中证500共
+800 个成分；它们是兼容数据和 schema 证据。简化入口的验证目前使用 fake provider，不新增
+BaoStock 请求。
+
+## Milestone 8：真实回填与 OOS 验收
+
+M8.0 已于 2026-08-11 完成：固定 2024-06-07 成分的 1,602 条基础请求已补齐 800 个股票从
+2011-01-01 至 2026-08-10 的双价格日线，并完成离线 inspect、干净 ingest 和完整性验收。
+下一步 M8.1 运行带幸存者偏差标记的真实规模 smoke；随后另行补 point-in-time universe、
+benchmark、corporate action 和必要的 09:35 数据，生成正式 untouched OOS artifact。
+
+API 优先级、M8.0-M8.4 切片和完成边界见
+[`baostock-data-plan.md`](baostock-data-plan.md)。固定当前成分的 smoke 有幸存者偏差，不能关闭
+M4；M4 正式报告经人工审阅前，M6 timer、forward observation 和 live AI proposal 均不得启动。
+
 ## 延后事项
 
 - Qlib 机器学习因子模型。

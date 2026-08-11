@@ -52,10 +52,15 @@ class FixedBaoStockClient:
         )
 
     def trade_calendar(self, *, start_date: date, end_date: date) -> ProviderBatch:
+        rows = tuple(
+            row
+            for row in (("2024-01-02", "1"), ("2024-01-03", "0"))
+            if start_date <= date.fromisoformat(row[0]) <= end_date
+        )
         return _batch(
             "trade_calendar",
             ("calendar_date", "is_trading_day"),
-            (("2024-01-02", "1"), ("2024-01-03", "0")),
+            rows,
             query={"start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
         )
 

@@ -1,8 +1,8 @@
 import time
 from collections.abc import Callable
 from datetime import date
+from typing import Any
 
-from trading_codex.data.baostock_client import BaoStockClient
 from trading_codex.data.models import CacheMissError, ProviderBatch, RequestBudgetExceeded
 from trading_codex.data.raw_store import ImmutableRawStore
 
@@ -16,7 +16,7 @@ class CachedBaoStockClient:
         self,
         raw_store: ImmutableRawStore,
         *,
-        upstream: BaoStockClient | None = None,
+        upstream: Any | None = None,
         allow_network: bool = False,
         max_upstream_requests: int = 1,
         minimum_request_interval: float = 3.0,
@@ -32,8 +32,10 @@ class CachedBaoStockClient:
             )
         if minimum_request_interval < 0:
             raise ValueError("minimum_request_interval must be non-negative")
+        if allow_network and upstream is None:
+            raise ValueError("network access requires an explicitly injected test upstream")
         self.raw_store = raw_store
-        self.upstream = upstream or BaoStockClient()
+        self.upstream = upstream
         self.allow_network = allow_network
         self.max_upstream_requests = max_upstream_requests
         self.minimum_request_interval = minimum_request_interval
@@ -50,6 +52,7 @@ class CachedBaoStockClient:
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if self._upstream_open:
+            assert self.upstream is not None
             self.upstream.__exit__(exc_type, exc, traceback)
             self._upstream_open = False
 
@@ -167,6 +170,7 @@ class CachedBaoStockClient:
                 f"({_query_text(query)})"
             )
         if not self._upstream_open:
+            assert self.upstream is not None
             self.upstream.__enter__()
             self._upstream_open = True
         self._throttle()

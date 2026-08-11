@@ -67,6 +67,11 @@ class Module:
         return Result(fields=["date", "adjustflag"])
 
 
+def test_legacy_client_has_no_implicit_production_provider() -> None:
+    with pytest.raises(ProviderError, match="legacy BaoStock adapter is disabled"):
+        BaoStockClient()
+
+
 def test_client_collects_rows_without_pandas_result_helper() -> None:
     received_at = datetime(2024, 1, 3, tzinfo=UTC)
     client = BaoStockClient(module=Module(), clock=lambda: received_at)  # type: ignore[arg-type]

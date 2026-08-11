@@ -4,7 +4,7 @@
 
 ```text
 data/
-  raw/           内容寻址且不可变的 provider 原始响应
+  raw/           query-addressed、带 payload/envelope hash 的 provider 原始 envelope
   normalized/    固定 schema 的 Parquet 数据集
   features/      后续里程碑生成的版本化特征
 ```
@@ -17,13 +17,38 @@ artifact 路径。决策查询必须显式传入带时区的 `as_of`；执行价
 09:35 的五分钟 bar；09:35 决策的日线查询截止前一完整交易日。状态 universe 与候选
 shortlist 不得互相冒充，覆盖不足同样会 fail closed。BaoStock `turn` 按 provider 的
 百分数单位原样保存，不应再乘以 100。
+normalized 价格固定为 `decimal128(20,6)`；更高精度的 provider 价格使用固定
+`ROUND_HALF_EVEN` 量化到六位，immutable raw 仍保留完整原值。
+
+## API 接入状态与后续计划
+
+现有离线数据层已接入 `query_stock_basic`、`query_trade_dates`、`query_all_stock`、
+`query_history_k_data_plus` 和 `query_adjust_factor`。Milestone 7 下载器还实现了
+`query_daily_history_k_AStock`、`query_daily_adjust_factor`、`query_hs300_stocks`、
+`query_zz500_stocks` 和 `query_dividend_data` 的 endpoint contract、provider adapter
+与 normalizer，并新增 point-in-time `index_memberships` 数据集。
+
+`query_history_k_data_plus` 日线双价格和沪深300/中证500成分单项 pilot 已于 2026-08-10
+通过。固定 2024-06-07 成分的 M8.0 基础集已于 2026-08-11 完成：800 个标的从 2011-01-01
+至 2026-08-10 的前复权/不复权日线共 4,973,298 行。该固定成分数据有幸存者偏差，不能作为
+正式 OOS 结论。API 优先级、请求计数风险、落盘 schema、程序消费路径和 M8.0-M8.4 计划见
+[`docs/baostock-data-plan.md`](../docs/baostock-data-plan.md)。
+
+批量回填的数据根目录为 `/mnt/exos_1t/quant/baostock`。JSONL 请求、严格串行下载、停止条件和
+离线处理见 [`docs/baostock-download-operations.md`](../docs/baostock-download-operations.md)。
+下载器不推断设备、mount 或空间，也不干预三块 EXOS 硬盘的 300 秒 `hd-idle` 策略。
+
+用户提供的 BaoStock 官方 [blacklist 页面](https://www.baostock.com/blacklist) 给出单 IP 每日
+`50,000` 次访问上限并禁止并发。M7 CLI 以跨 data root 的 global provider lock 强制串行，按
+每个底层 socket send 计数，并默认在 40,000 次停止。该页面已于 2026-08-09 直接在线核实；
+黑名单错误 `10001011` 写本地 marker 并禁止自动重试。官方没有声明自然日时区、具体计数口径
+或 QPS。
 
 ## BaoStock 缓存和请求门禁
 
-`sync` 默认完全离线。它先检查规范化数据覆盖和 exact-query raw cache；cache miss
-会 fail closed，既不登录也不请求 BaoStock。只有显式添加 `--fetch-missing` 才允许
-回源，而且客户端硬性限制每个进程最多尝试 1 次上游数据请求。失败的尝试同样消耗
-预算，不能通过捕获异常在同一进程连续重试。
+`trading-codex-data` 永久保持离线。兼容参数 `--fetch-missing` 只会在任何 provider import 或
+login 前以退出码 `2` 拒绝。唯一联网入口是 `trading-codex-baostock`，它读取 JSONL exact
+request、持有全局锁并把响应保存为 raw envelope。
 
 先用离线命令确认缺口：
 
@@ -40,18 +65,18 @@ uv run trading-codex-data sync \
 `adjustflag=2` 和 `adjustflag=3` 使用不同的 exact-query cache key，不会互相冒充
 cache hit。
 
-确实需要补缓存时，人工执行同一命令并追加一次 `--fetch-missing`。一次运行只会补
-一个 exact query；遇到下一个 cache miss 后会停止。不要把该命令放入循环、并发任务
-或面向大批标的的自动重试中。每发出一次请求后，立即恢复为同一条离线命令，确认
-对应 normalized 覆盖已经更新且 `upstream_requests` 为 `0`，再人工评估下一个缺口。
-已满足 normalized 覆盖的 query 会直接跳过，因此复查时 `cache_hits` 不一定增加。
-改变日期范围、复权标志或其他 query 参数都会形成新的 cache key。
+已有 raw cache 仍可完全离线重放。改变 endpoint、日期范围、复权标志或 client version 会形成
+新的 request ID。目标文件存在就跳过，内容好坏由独立 envelope 检查发现。M7 操作步骤见
+[`docs/baostock-download-operations.md`](../docs/baostock-download-operations.md)。
 
 ## 本地质量检查
 
 以下命令只读取本地 Parquet，不访问 BaoStock：
 
 ```bash
+uv run trading-codex-data inspect-raw
+uv run trading-codex-data ingest-raw
+
 uv run trading-codex-data quality \
   --as-of 2026-08-08T12:00:00+08:00
 
