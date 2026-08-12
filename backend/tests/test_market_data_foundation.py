@@ -375,6 +375,43 @@ def test_point_in_time_view_filters_and_rejects_future_requests(tmp_path: Path) 
         store.rows_as_of("daily_bars", as_of=datetime(2024, 1, 2, 15, 0))
 
 
+def test_bounded_scan_pushes_daily_filters_and_projection(tmp_path: Path) -> None:
+    pipeline, store, _ = _pipeline(tmp_path)
+    pipeline.ingest(
+        FixedBaoStockClient().daily_bars(
+            code="sh.600000",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+        )
+    )
+
+    table = store.scan(
+        "daily_bars",
+        as_of=datetime(2024, 1, 2, 7, tzinfo=UTC),
+        columns=("trade_date", "code", "close"),
+        contained_in={"code": ("sh.600000",)},
+        ranges={"trade_date": (date(2024, 1, 2), date(2024, 1, 2))},
+    )
+    series = store.daily_bar_series(
+        codes=("sh.600000",),
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        as_of=datetime(2024, 1, 2, 7, tzinfo=UTC),
+        adjustment_flags=("3",),
+        columns=("trade_date", "code", "adjustment_flag", "close"),
+    )
+
+    assert table.column_names == ["trade_date", "code", "close"]
+    assert table.num_rows == 1
+    assert tuple(series) == (("sh.600000", "3"),)
+    assert series[("sh.600000", "3")].column_names == [
+        "trade_date",
+        "code",
+        "adjustment_flag",
+        "close",
+    ]
+
+
 def test_invalid_ohlc_fails_closed_before_normalized_write(tmp_path: Path) -> None:
     pipeline, store, raw = _pipeline(tmp_path)
     valid = FixedBaoStockClient().daily_bars(

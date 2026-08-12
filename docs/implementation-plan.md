@@ -148,8 +148,9 @@ BaoStock 请求。
 
 M8.0 已于 2026-08-11 完成：固定 2024-06-07 成分的 1,602 条基础请求已补齐 800 个股票从
 2011-01-01 至 2026-08-10 的双价格日线，并完成离线 inspect、干净 ingest 和完整性验收。
-下一步 M8.1 运行带幸存者偏差标记的真实规模 smoke；随后另行补 point-in-time universe、
-benchmark、corporate action 和必要的 09:35 数据，生成正式 untouched OOS artifact。
+M8.1 也已完成：固定成分、528 个交易日、默认 252/63 和两组参数的真实规模 EOD smoke 已生成
+带完整 provenance 的 artifact。下一步 M8.2-M8.4 另行补 point-in-time universe、benchmark、
+corporate action 和必要的 09:35 数据，生成正式 untouched OOS artifact。
 
 API 优先级、M8.0-M8.4 切片和完成边界见
 [`baostock-data-plan.md`](baostock-data-plan.md)。固定当前成分的 smoke 有幸存者偏差，不能关闭

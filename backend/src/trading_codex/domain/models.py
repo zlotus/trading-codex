@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from functools import cached_property
 from zoneinfo import ZoneInfo
 
 from trading_codex.domain.hashing import canonical_sha256
@@ -215,18 +216,15 @@ class DecisionSnapshot:
                     "opening previous close disagrees with completed daily data"
                 )
 
-    @property
+    @cached_property
     def snapshot_id(self) -> str:
         return canonical_sha256(self)
 
     def bars_for(self, code: str) -> tuple[DailyBar, ...]:
-        return tuple(bar for bar in self.bars if bar.code == code)
+        return self._bars_by_code.get(code, ())
 
     def state_on(self, code: str, day: date) -> DailyBar | None:
-        return next(
-            (bar for bar in reversed(self.bars) if bar.code == code and bar.trade_date == day),
-            None,
-        )
+        return self._bars_by_code_and_date.get((code, day))
 
     def latest_priced_bar(self, code: str) -> DailyBar | None:
         current = self.decision_state(code)
@@ -274,16 +272,39 @@ class DecisionSnapshot:
         )
 
     def position_for(self, code: str) -> PortfolioPosition | None:
-        return next((position for position in self.positions if position.code == code), None)
+        return self._positions_by_code.get(code)
 
     def opening_bar_for(self, code: str) -> OpeningBar | None:
-        return next((bar for bar in self.opening_bars if bar.code == code), None)
+        return self._opening_by_code.get(code)
 
     def rule_for(self, code: str) -> InstrumentRule:
-        rule = next((item for item in self.rules if item.code == code), None)
+        rule = self._rules_by_code.get(code)
         if rule is None:
             raise SnapshotValidationError(f"missing instrument rule for {code}")
         return rule
+
+    @cached_property
+    def _bars_by_code(self) -> dict[str, tuple[DailyBar, ...]]:
+        grouped: dict[str, list[DailyBar]] = {}
+        for bar in self.bars:
+            grouped.setdefault(bar.code, []).append(bar)
+        return {code: tuple(values) for code, values in grouped.items()}
+
+    @cached_property
+    def _bars_by_code_and_date(self) -> dict[tuple[str, date], DailyBar]:
+        return {(bar.code, bar.trade_date): bar for bar in self.bars}
+
+    @cached_property
+    def _positions_by_code(self) -> dict[str, PortfolioPosition]:
+        return {position.code: position for position in self.positions}
+
+    @cached_property
+    def _rules_by_code(self) -> dict[str, InstrumentRule]:
+        return {rule.code: rule for rule in self.rules}
+
+    @cached_property
+    def _opening_by_code(self) -> dict[str, OpeningBar]:
+        return {bar.code: bar for bar in self.opening_bars}
 
     def _validate_sorted_unique(self) -> None:
         candidate_codes = tuple(sorted(set(self.candidate_codes)))

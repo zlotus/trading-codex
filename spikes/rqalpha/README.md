@@ -25,3 +25,20 @@ instrument、5 个交易日和全部账务断言均匹配 fixture。运行时使
 
 该结论只支持把 RQAlpha 作为日频回测的窄适配器。它不证明分钟级适配、真实
 corporate action 映射或更长历史区间已经完成；这些边界记录在 ADR-0003。
+
+## M8.1 固定成分 EOD smoke
+
+安装上述隔离环境后，可以直接运行真实 normalized 数据的 M8.1 工程 smoke：
+
+```bash
+/tmp/trading-codex-rqalpha/bin/trading-codex-m8-smoke \
+  --data-root /mnt/exos_1t/quant/baostock \
+  --universe-date 2024-06-07 \
+  --start-date 2024-06-07 \
+  --end-date 2026-08-10 \
+  --material-as-of 2026-08-11T12:45:22.535136Z
+```
+
+该 runner 不下载 RQAlpha bundle，也不访问 BaoStock。它使用固定成分 EOD 视图，结果明确带
+`survivorship_bias=true` 和 `formal_m4_oos=false`，不能替代 M4 正式 OOS。完整参数、产物位置
+和研究边界见 [`docs/baostock-download-operations.md`](../../docs/baostock-download-operations.md)。

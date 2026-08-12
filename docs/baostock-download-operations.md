@@ -132,6 +132,44 @@ segment 并报告 warning，不能先污染 normalized 再等待读取阶段发�
 下载和预处理互不传递完成状态：下载器自检不能替代 `inspect-raw`，`inspect-raw` 通过也不能
 替代 normalized quality 或 M4 OOS 验收。
 
+## M8.1 真实规模 EOD smoke
+
+M8.1 不访问 BaoStock。它只读取已完成 M8.0 ingest 的 normalized Parquet，并使用隔离的
+RQAlpha 6.3.0 环境。首次创建环境：
+
+```bash
+cd /home/radxa/quant/trading-codex
+
+uv venv /tmp/trading-codex-rqalpha --python 3.12
+uv pip install --python /tmp/trading-codex-rqalpha/bin/python -e .
+uv pip install --python /tmp/trading-codex-rqalpha/bin/python \
+  -r spikes/rqalpha/requirements.txt
+```
+
+复现 2026-08-11 验收范围：
+
+```bash
+/usr/bin/time -v /tmp/trading-codex-rqalpha/bin/python \
+  -m trading_codex.backtest.m8_smoke \
+  --data-root /mnt/exos_1t/quant/baostock \
+  --universe-date 2024-06-07 \
+  --start-date 2024-06-07 \
+  --end-date 2026-08-10 \
+  --material-as-of 2026-08-11T12:45:22.535136Z \
+  --train-periods 252 \
+  --test-periods 63 \
+  --bootstrap-samples 1000
+```
+
+也可以使用同环境里的 `trading-codex-m8-smoke` entrypoint。运行会顺序执行
+`turnover_10pct` 和 `turnover_20pct`，向 stderr 输出进度，并把内容寻址 JSON artifact 写入
+`<data-root>/artifacts/m8.1/`。重复运行会产生新的时间和资源记录；研究 observations 与
+walk-forward report 应保持一致。
+
+该命令明确是固定成分 EOD 工程 smoke：有幸存者偏差，使用非官方等权 benchmark，不应用
+corporate action，也不使用 09:35 opening 特征。输出中的 `formal_m4_oos=false` 不能被改写；
+M4 正式报告仍需要 M8.2-M8.4 数据和冻结边界。
+
 ## 请求限制
 
 BaoStock 官方规则是同一公网 IP 每日不得超过 50,000 次 API 请求，并禁止并发连接。程序执行：

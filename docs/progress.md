@@ -8,9 +8,11 @@ Milestone 7 已按 ADR-0010 收缩为 Unix 风格 raw 工具链：Trading Codex 
 下载器存在即跳过、严格串行落 envelope，离线工具独立 inspect/ingest。Milestone 8 的默认基础
 数据回填 M8.0 已完成：800 个标的 2011-01-01 至 2026-08-10 双价格 raw 已下载并通过 envelope inspect；
 停牌空成交量和 BaoStock 行级复权标记偏差已修复，M8.0 干净重建、逐 segment 验收和完整读取
-性能测量均已完成。下一步是 M8.1 固定 universe EOD smoke runner。Milestone 4 的正式 OOS 证据
-仍待补齐；M5/M6 代码 contract 已实现，但 M4 未关闭前不能启动 M6 前瞻运行，当前 observation
-为 0/60。
+性能测量均已完成。M8.1 固定 universe EOD smoke 也已完成：800 个标的、528 个交易日、默认
+252/63 walk-forward 和两组换手敏感性在真实 normalized 数据与 RQAlpha 6.3.0 上完整运行，
+artifact 的数据、代码和研究边界可审计。下一步是 M8.2 point-in-time universe 与 benchmark。
+Milestone 4 的正式 OOS 证据仍待补齐；M5/M6 代码 contract 已实现，但 M4 未关闭前不能启动
+M6 前瞻运行，当前 observation 为 0/60。
 
 ## 当前基线
 
@@ -85,6 +87,11 @@ Milestone 7 已按 ADR-0010 收缩为 Unix 风格 raw 工具链：Trading Codex 
   candidate freeze 前不会向开发阶段暴露 test descriptor。
 - BaoStock 前复权日线仍是显式 opt-in，并使用独立 exact-query cache key；主应用、回测、
   scheduler 和旧数据 CLI 均不能回源。
+- `ParquetDataStore.scan` 使用 Arrow 谓词下推和列裁剪执行有界 `as_of` 查询，并在过滤结果上
+  保留业务键重复检查；日线可按代码、日期和复权轨一次加载为有序序列，供多日决策复用。
+- `trading-codex-m8-smoke` 使用固定 2024-06-07 沪深300/中证500成分并集、EOD 专用版本化
+  regime profile、双价格和共享决策管线驱动 RQAlpha；artifact 保存每日日志、参数敏感性、
+  walk-forward 报告、source payload 集合、Git commit/dirty 状态和源码聚合 hash。
 - `/api/v1/system/status` 保持 `research` mode，历史数据、决策内核、账本和回测边界
   已就绪；实时行情与模型 adapter 仍未配置，AI 核心不会因此伪报为可运行。
 - `OneShotDailyScheduler` 只处理当前交易日 09:35/15:30 窄窗口，并在 task 前强制 critical
@@ -95,18 +102,18 @@ Milestone 7 已按 ADR-0010 收缩为 Unix 风格 raw 工具链：Trading Codex 
 
 ## 进行中
 
-M8.0 已完成。外置盘包含 1,606 个有效 envelope；当前 normalized 有 1,600 个 exact 日线 segment、
-800 个标的和双轨各 2,486,649 行，另有 8,887 个 instruments、5,701 个 calendar rows 和 800 个
-index memberships。全部 exact artifact 来源、schema、payload filename hash、单 segment 日期唯一性
-和双轨日期配对均通过。M4 的真实数据 smoke 和正式 OOS 都未完成；M5 没有 live AI 提案；M6 没有
-已安装的 timer、真实 daily task、远程通知或 observation。
+M8.0 和 M8.1 已完成。外置盘包含 1,606 个有效 envelope；当前 normalized 有 1,600 个 exact 日线
+segment、800 个标的和双轨各 2,486,649 行，另有 8,887 个 instruments、5,701 个 calendar rows
+和 800 个 index memberships。固定成分 EOD smoke 已证明真实规模共享决策、成本、RQAlpha 和
+walk-forward 路径可运行，但它明确带幸存者偏差，不能替代 M4 正式 OOS。M5 没有 live AI 提案；
+M6 没有已安装的 timer、真实 daily task、远程通知或 observation。
 
 ## 下一步
 
-1. 为 M8.1 增加不会按决策日重复执行全表 Python 化的有界日线读取路径。
-2. 增加显式 `survivorship_bias=true` 的固定 universe EOD smoke runner，运行默认 252/63
-   walk-forward 并记录真实耗时、内存和结果 artifact。
-3. 补 point-in-time universe、benchmark、corporate action 和必要的 09:35 数据，再生成正式 OOS。
+1. M8.2 补 point-in-time universe、官方或可审计 benchmark 日期网格和覆盖报告。
+2. M8.3 对账真实 corporate action，并只为已批准的 09:35 研究范围补分钟线。
+3. M8.4 冻结数据、代码、成本和参数边界，生成正式 untouched OOS artifact；人工审阅后再判断
+   M4 是否关闭及是否允许 M6 开始前瞻观察。
 
 ## 风险与限制
 
@@ -139,13 +146,29 @@ index memberships。全部 exact artifact 来源、schema、payload filename has
   endpoint 仍只有 fake fixture。Dividend 缺少日内公告时间，当前 `available_at` 保守使用公告日
   后一个自然日 00:00。
 - 800 标的双价格共有 4,973,298 行；当前硬件上完整 `ParquetDataStore.read` 耗时 16:43.49、峰值
-  RSS 约 12.3 GiB。它可作为一次性完整性检查，但不能由 walk-forward 每个决策日重复调用；M8.1
-  需要有界 Arrow/DuckDB 读取或等价的一次加载、多日复用路径。
+  RSS 约 12.3 GiB。它只作为一次性完整性检查；M8.1 的有界视图冷加载 41.55 秒，完整双参数
+  smoke 峰值 RSS 约 1.17 GiB，证明不再按决策日重复执行全表 Python 化。该性能结果依赖当前
+  RK3588、NTFS 外置机械盘和数据布局，不能当作跨机器 SLA。
+- M8.1 的非官方固定成分等权 benchmark、固定 2024-06-07 universe、未应用 corporate action 和
+  未启用 09:35 特征都是显式研究限制。报告中的负收益不能用于判断正式策略优劣，后续不得将
+  `formal_m4_oos=false` 的 artifact 重标为正式 OOS。
 - RQAlpha 当前固定为 6.3.0 并隔离运行。用途变为商业场景或升级版本前，需要重新
   核对源码许可说明和全部 adapter fixture。
 
 ## 验证
 
+- 2026-08-11：隔离 RQAlpha 6.3.0 环境完成真实 M8.1 smoke：固定 800 个标的、2024-06-07 至
+  2026-08-10 共 528 个交易日，双轨各有界读取 468,108 行；默认 252/63 得到 4 个完整 fold 和
+  252 个 OOS observation。两组换手参数各有 528 条逐日记录，成交 17,282/13,543 笔，RQAlpha
+  拒单均为 0。墙钟耗时 21:11.26、峰值 RSS 1,225,424 KiB、无 swap、无网络访问。
+- 2026-08-11：M8.1 OOS 工程结果为累计收益 -10.7422854322%、最大回撤 24.3235724898%、
+  Sharpe -0.690697168600、平均成本率 0.000262537861；只作为带幸存者偏差的 smoke 证据。
+  artifact `m8-smoke-da624350...14996f.json` 的独立 SHA-256、边界字段、3 个非空 regime slice、
+  2 组敏感性、Git commit `e233f859...bcc9095`、dirty 标记、93 个源码/配置文件 hash 均通过；
+  observations 与 walk-forward report 和修复 provenance 前的首次完整运行逐项一致。
+- 2026-08-11：M8.1 完成后的 `.venv/bin/pytest -q` 通过 156 个测试，`.venv/bin/ruff check .`、
+  `UV_CACHE_DIR=/tmp/trading-codex-uv-cache uv lock --check` 与 `git diff --check` 通过。隔离环境中的
+  RQAlpha 6.3.0 原有 20 标的账务 spike 再次通过，新 `trading-codex-m8-smoke --help` 入口可用。
 - 2026-08-11：固定 2024-06-07 沪深300/中证500并集的 1,602 条请求全部下载；exact request
   目标文件为 1,602/1,602，缺失 0。`inspect-raw` 只读校验外置盘 1,606/1,606 个 envelope，
   `warnings=[]`、`network_access=false`，raw 约 1.3 GB。

@@ -122,10 +122,12 @@ M7 简化入口至少覆盖：
 `inspect-raw`、干净 `ingest-raw` 和逐 segment 验收。800 个标的双轨日线共 4,973,298 行；
 完整读取耗时 16:43.49、峰值 RSS 约 12.3 GiB。该结果只关闭 M8.0，不关闭正式 M4 OOS。
 
-### M8.1：M4 真实数据 smoke（下一步）
+### M8.1：M4 真实数据 smoke（已完成）
 
 为固定 universe 增加明确标记为 survivorship-biased 的 EOD smoke runner，验证 M4 决策管线、
-成本、RQAlpha adapter 和 walk-forward 计算能在真实规模运行。该报告不能关闭 M4。
+成本、RQAlpha adapter 和 walk-forward 计算能在真实规模运行。2026-08-11 已完成 800 标的、
+528 个交易日、默认 252/63 和两组参数的完整运行；峰值 RSS 约 1.17 GiB，artifact hash 与代码
+provenance 已独立校验。该报告显式为 `formal_m4_oos=false`，不能关闭 M4。
 
 ### M8.2：M4 正式 OOS 数据
 

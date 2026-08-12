@@ -10,6 +10,7 @@ from trading_codex.domain.contracts import (
 from trading_codex.domain.models import SHANGHAI, DecisionSnapshot, SnapshotValidationError
 
 REGIME_VERSION = "interpretable-market-regime-v1"
+EOD_REGIME_VERSION = "interpretable-market-regime-eod-v1"
 REGIME_QUANTUM = Decimal("0.000000000001")
 PROBABILITY_QUANTUM = Decimal("0.00000001")
 
@@ -37,6 +38,7 @@ class MarketRegimeConfig:
     emergency_trend: Decimal = Decimal("-0.12")
     emergency_breadth: Decimal = Decimal("0.20")
     emergency_opening_return: Decimal = Decimal("-0.05")
+    opening_feature_enabled: bool = True
     version: str = REGIME_VERSION
 
     def __post_init__(self) -> None:
@@ -94,6 +96,8 @@ class MarketRegimeFeaturePipeline:
                 f"breadth={features.breadth}",
                 f"average_turnover={features.average_turnover}",
                 f"concentration={features.concentration}",
+                "opening_feature="
+                + ("enabled" if self.config.opening_feature_enabled else "disabled_eod"),
                 f"opening_return={features.opening_return}",
                 f"selected={selected.value}; probability={probability}",
                 *emergency_reasons,
@@ -179,28 +183,31 @@ class MarketRegimeFeaturePipeline:
             _ceiling(Decimal(len(amounts)) * self.config.concentration_fraction),
         )
 
-        opening = tuple(
-            bar
-            for code in price_series
-            if (bar := snapshot.opening_bar_for(code)) is not None
-            and bar.trade_status
-            and bar.volume > 0
-            and bar.amount > 0
-            and (
-                bar.timestamp.astimezone(SHANGHAI).hour * 60
-                + bar.timestamp.astimezone(SHANGHAI).minute
-                == self.config.opening_checkpoint_minutes
+        opening_coverage = Decimal(0)
+        opening_return = Decimal(0)
+        if self.config.opening_feature_enabled:
+            opening = tuple(
+                bar
+                for code in price_series
+                if (bar := snapshot.opening_bar_for(code)) is not None
+                and bar.trade_status
+                and bar.volume > 0
+                and bar.amount > 0
+                and (
+                    bar.timestamp.astimezone(SHANGHAI).hour * 60
+                    + bar.timestamp.astimezone(SHANGHAI).minute
+                    == self.config.opening_checkpoint_minutes
+                )
             )
-        )
-        opening_coverage = Decimal(len(opening)) / Decimal(len(price_series))
-        if opening_coverage < self.config.minimum_opening_coverage:
-            raise SnapshotValidationError(
-                "regime opening feature coverage is below the configured minimum"
-            )
-        opening_amount = sum((bar.amount for bar in opening), Decimal(0))
-        opening_return = sum(
-            (bar.close_price / bar.open_price - 1) * bar.amount for bar in opening
-        ) / opening_amount
+            opening_coverage = Decimal(len(opening)) / Decimal(len(price_series))
+            if opening_coverage < self.config.minimum_opening_coverage:
+                raise SnapshotValidationError(
+                    "regime opening feature coverage is below the configured minimum"
+                )
+            opening_amount = sum((bar.amount for bar in opening), Decimal(0))
+            opening_return = sum(
+                (bar.close_price / bar.open_price - 1) * bar.amount for bar in opening
+            ) / opening_amount
 
         return RegimeFeatureVector(
             trend_return=_quantize(
@@ -314,7 +321,10 @@ class MarketRegimeFeaturePipeline:
             and features.breadth <= self.config.emergency_breadth
         ):
             reasons.append("emergency=trend_and_breadth")
-        if features.opening_return <= self.config.emergency_opening_return:
+        if (
+            self.config.opening_feature_enabled
+            and features.opening_return <= self.config.emergency_opening_return
+        ):
             reasons.append("emergency=opening_selloff")
         return bool(reasons), tuple(reasons)
 

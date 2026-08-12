@@ -11,7 +11,7 @@ from rqalpha.interface import AbstractDataSource, ExchangeRate
 from rqalpha.model.instrument import Instrument
 
 from trading_codex.data.parquet_store import ParquetDataStore
-from trading_codex.data.time import require_aware
+from trading_codex.data.time import SHANGHAI, require_aware
 
 BAR_DTYPE = np.dtype(
     [
@@ -25,6 +25,13 @@ BAR_DTYPE = np.dtype(
         ("limit_down", "<f8"),
         ("volume", "<f8"),
         ("total_turnover", "<f8"),
+    ]
+)
+METADATA_DTYPE = np.dtype(
+    [
+        ("datetime", "<u8"),
+        ("trade_status", "?"),
+        ("is_st", "?"),
     ]
 )
 DIVIDEND_DTYPE = np.dtype(
@@ -43,15 +50,48 @@ SPLIT_DTYPE = np.dtype([("ex_date", "<i8"), ("split_factor", "<f8")])
 class RQAlphaParquetDataSource(AbstractDataSource):
     """Bounded RQAlpha data-source spike over normalized local Parquet data."""
 
-    def __init__(self, normalized_root: Path, *, as_of: datetime) -> None:
+    def __init__(
+        self,
+        normalized_root: Path,
+        *,
+        as_of: datetime,
+        codes: Iterable[str] | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> None:
         self.as_of = require_aware(as_of, field="as_of")
+        self.codes = tuple(sorted(set(codes or ())))
+        self.start_date = start_date
+        self.end_date = end_date
+        if start_date is not None and end_date is not None and end_date < start_date:
+            raise ValueError("RQAlpha adapter end_date must not precede start_date")
+        if end_date is not None and end_date > self.as_of.astimezone(SHANGHAI).date():
+            raise ValueError("RQAlpha adapter end_date exceeds as_of")
         self.store = ParquetDataStore(normalized_root)
         self._calendar = self._load_calendar()
         self._instruments = self._load_instruments()
+        if self.codes:
+            loaded_codes = {
+                order_book_id_to_baostock(value) for value in self._instruments
+            }
+            if loaded_codes != set(self.codes):
+                missing = sorted(set(self.codes) - loaded_codes)
+                raise ValueError(f"RQAlpha adapter instruments are missing: {missing}")
+        if not self.codes:
+            self.codes = tuple(
+                sorted(order_book_id_to_baostock(value) for value in self._instruments)
+            )
+        if self.start_date is None:
+            self.start_date = self._calendar[0].date()
+        if self.end_date is None:
+            self.end_date = self._calendar[-1].date()
         self._bars, self._bar_metadata = self._load_bars()
-        self._corporate_actions = self.store.rows_as_of(
-            "corporate_actions", as_of=self.as_of
-        )
+        self._corporate_actions = self.store.scan(
+            "corporate_actions",
+            as_of=self.as_of,
+            contained_in={"code": self.codes},
+            ranges={"ex_date": (self.start_date, self.end_date)},
+        ).to_pylist()
 
     def get_instruments(
         self,
@@ -128,12 +168,24 @@ class RQAlphaParquetDataSource(AbstractDataSource):
         return selected[fields]
 
     def is_suspended(self, order_book_id: str, dates: Sequence[Any]) -> list[bool]:
-        metadata = self._bar_metadata.get(order_book_id, {})
-        return [not metadata.get(_as_date(value), {}).get("trade_status", False) for value in dates]
+        metadata = self._bar_metadata.get(
+            order_book_id,
+            np.empty(0, dtype=METADATA_DTYPE),
+        )
+        return [
+            not _metadata_value(metadata, _date_int(_as_date(value)), "trade_status")
+            for value in dates
+        ]
 
     def is_st_stock(self, order_book_id: str, dates: Sequence[Any]) -> list[bool]:
-        metadata = self._bar_metadata.get(order_book_id, {})
-        return [bool(metadata.get(_as_date(value), {}).get("is_st", False)) for value in dates]
+        metadata = self._bar_metadata.get(
+            order_book_id,
+            np.empty(0, dtype=METADATA_DTYPE),
+        )
+        return [
+            _metadata_value(metadata, _date_int(_as_date(value)), "is_st")
+            for value in dates
+        ]
 
     def get_dividend(self, instrument: Instrument) -> np.ndarray | None:
         actions = self._actions_for(instrument.order_book_id)
@@ -238,13 +290,31 @@ class RQAlphaParquetDataSource(AbstractDataSource):
         return None
 
     def _load_calendar(self) -> pd.DatetimeIndex:
-        rows = self.store.rows_as_of("trade_calendar", as_of=self.as_of)
+        ranges = (
+            {"calendar_date": (self.start_date, self.end_date)}
+            if self.start_date is not None or self.end_date is not None
+            else None
+        )
+        rows = self.store.scan(
+            "trade_calendar",
+            as_of=self.as_of,
+            columns=("calendar_date", "is_trading_day"),
+            ranges=ranges,
+        ).to_pylist()
         dates = [row["calendar_date"] for row in rows if row["is_trading_day"]]
-        return pd.DatetimeIndex(sorted(dates))
+        calendar = pd.DatetimeIndex(sorted(dates))
+        if calendar.empty:
+            raise ValueError("bounded normalized trade calendar is empty")
+        return calendar
 
     def _load_instruments(self) -> dict[str, Instrument]:
         result = {}
-        for row in self.store.rows_as_of("instruments", as_of=self.as_of):
+        contained_in = {"code": self.codes} if self.codes else None
+        for row in self.store.scan(
+            "instruments",
+            as_of=self.as_of,
+            contained_in=contained_in,
+        ).to_pylist():
             if row["security_type"] != "1":
                 continue
             order_book_id, exchange, board = _instrument_identity(row["code"])
@@ -270,42 +340,65 @@ class RQAlphaParquetDataSource(AbstractDataSource):
 
     def _load_bars(
         self,
-    ) -> tuple[dict[str, np.ndarray], dict[str, dict[date, dict[str, bool]]]]:
-        records: dict[str, list[tuple[Any, ...]]] = {}
-        metadata: dict[str, dict[date, dict[str, bool]]] = {}
-        for row in self.store.rows_as_of("daily_bars", as_of=self.as_of):
-            if row["adjustment_flag"] != "3":
-                continue
-            order_book_id = baostock_to_order_book_id(row["code"])
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        assert self.start_date is not None and self.end_date is not None
+        series = self.store.daily_bar_series(
+            codes=self.codes,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            as_of=self.as_of,
+            adjustment_flags=("3",),
+            columns=(
+                "trade_date",
+                "code",
+                "open",
+                "high",
+                "low",
+                "close",
+                "previous_close",
+                "volume",
+                "amount",
+                "adjustment_flag",
+                "trade_status",
+                "is_st",
+            ),
+        )
+        arrays: dict[str, np.ndarray] = {}
+        metadata: dict[str, np.ndarray] = {}
+        for (code, _), table in series.items():
+            order_book_id = baostock_to_order_book_id(code)
             instrument = self._instruments.get(order_book_id)
             if instrument is None:
                 continue
-            price_limit = _price_limit_ratio(instrument, row)
-            previous_close = row["previous_close"]
-            limit_up = _limit_price(previous_close, price_limit) if previous_close else np.nan
-            limit_down = _limit_price(previous_close, -price_limit) if previous_close else np.nan
-            records.setdefault(order_book_id, []).append(
-                (
-                    _date_int(row["trade_date"]),
-                    _float_or_nan(row["open"]),
-                    _float_or_nan(row["high"]),
-                    _float_or_nan(row["low"]),
-                    _float_or_nan(row["close"]),
-                    _float_or_nan(previous_close),
-                    limit_up,
-                    limit_down,
-                    float(row["volume"]),
-                    _float_or_nan(row["amount"]),
-                )
+            dates = np.fromiter(
+                (_date_int(value) for value in table["trade_date"].to_pylist()),
+                dtype=np.uint64,
+                count=table.num_rows,
             )
-            metadata.setdefault(order_book_id, {})[row["trade_date"]] = {
-                "trade_status": row["trade_status"],
-                "is_st": row["is_st"],
-            }
-        arrays = {
-            order_book_id: np.array(sorted(values), dtype=BAR_DTYPE)
-            for order_book_id, values in records.items()
-        }
+            previous_close = _float_column(table, "previous_close")
+            is_st = table["is_st"].combine_chunks().to_numpy(zero_copy_only=False)
+            ratio = np.where(is_st, 0.05, _instrument_limit_ratio(instrument))
+            limit_up = _round_half_up(previous_close * (1 + ratio), decimals=2)
+            limit_down = _round_half_up(previous_close * (1 - ratio), decimals=2)
+
+            bars = np.empty(table.num_rows, dtype=BAR_DTYPE)
+            bars["datetime"] = dates
+            for field in ("open", "high", "low", "close"):
+                bars[field] = _float_column(table, field)
+            bars["prev_close"] = previous_close
+            bars["limit_up"] = limit_up
+            bars["limit_down"] = limit_down
+            bars["volume"] = _float_column(table, "volume")
+            bars["total_turnover"] = _float_column(table, "amount")
+            arrays[order_book_id] = bars
+
+            flags = np.empty(table.num_rows, dtype=METADATA_DTYPE)
+            flags["datetime"] = dates
+            flags["trade_status"] = table["trade_status"].combine_chunks().to_numpy(
+                zero_copy_only=False
+            )
+            flags["is_st"] = is_st
+            metadata[order_book_id] = flags
         return arrays, metadata
 
     def _actions_for(self, order_book_id: str) -> list[dict[str, Any]]:
@@ -344,14 +437,12 @@ def _instrument_identity(code: str) -> tuple[str, EXCHANGE, str]:
     return order_book_id, exchange, "MainBoard"
 
 
-def _price_limit_ratio(instrument: Instrument, row: dict[str, Any]) -> Decimal:
-    if row["is_st"]:
-        return Decimal("0.05")
+def _instrument_limit_ratio(instrument: Instrument) -> float:
     if instrument.board_type in {"KSH", "GEM"}:
-        return Decimal("0.20")
+        return 0.20
     if instrument.board_type == "BJS":
-        return Decimal("0.30")
-    return Decimal("0.10")
+        return 0.30
+    return 0.10
 
 
 def _limit_price(previous_close: Decimal, ratio: Decimal) -> float:
@@ -361,6 +452,22 @@ def _limit_price(previous_close: Decimal, ratio: Decimal) -> float:
 
 def _float_or_nan(value: Decimal | None) -> float:
     return float(value) if value is not None else np.nan
+
+
+def _float_column(table: Any, name: str) -> np.ndarray:
+    return table[name].cast("double").combine_chunks().to_numpy(zero_copy_only=False)
+
+
+def _round_half_up(values: np.ndarray, *, decimals: int) -> np.ndarray:
+    scale = 10**decimals
+    return np.floor(values * scale + 0.5) / scale
+
+
+def _metadata_value(metadata: np.ndarray, target: int, field: str) -> bool:
+    index = int(np.searchsorted(metadata["datetime"], target, side="left"))
+    if index >= len(metadata) or metadata[index]["datetime"] != target:
+        return False
+    return bool(metadata[index][field])
 
 
 def _date_int(value: date) -> int:

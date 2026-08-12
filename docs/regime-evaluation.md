@@ -51,6 +51,21 @@ Milestone 4 的研究 contract 位于共享决策核心，不依赖 RQAlpha 策�
 - 固定 seed 的移动 block bootstrap 主动收益置信区间及为正概率；
 - 考虑候选参数数量、偏度和峰度的 Deflated Sharpe 概率。
 
-这些字段是评估能力，不等同于真实策略表现。当前本地 normalized 日线只有 97 行、19 个
-标的，且全部为 `adjustflag=3`；在补齐前复权轨和足够长的训练/测试历史前，不生成或保存
-具有误导性的真实绩效报告。
+这些字段是评估能力，不等同于真实策略表现。
+
+## M8.1 EOD 工程 smoke
+
+默认 09:35 contract 保持不变。M8.1 为没有历史分钟线的真实规模工程检查增加独立版本
+`interpretable-market-regime-eod-v1`：显式关闭 opening 特征、将 `opening_coverage` 和
+`opening_return` 记为 0，并在解释中写入 `opening_feature=disabled_eod`。它不是用零值冒充
+09:35 观测，也不能把 EOD 结果外推到 opening 决策。
+
+2026-08-11 的固定成分 smoke 使用 800 个标的、528 个交易日、默认 252/63 walk-forward 和
+`turnover_10pct`/`turnover_20pct` 两组参数。报告包含 4 个完整 fold、252 个 OOS observation、
+3 个非空 regime slice 和 2 组敏感性。被选择参数的 OOS 累计收益为 -10.7422854322%，最大
+回撤 24.3235724898%，Sharpe -0.690697168600，平均成本率 0.000262537861。
+
+这些数值来自固定 2024-06-07 成分、非官方固定成分等权 benchmark，且未应用 corporate action；
+artifact 明确设置 `survivorship_bias=true` 和 `formal_m4_oos=false`。它只证明共享决策、成本、
+RQAlpha 和统计路径能在真实规模完整运行。补齐 point-in-time universe、正式 benchmark、
+corporate action 和必要的 09:35 数据，并冻结 untouched test 边界后，才能生成 M4 正式报告。

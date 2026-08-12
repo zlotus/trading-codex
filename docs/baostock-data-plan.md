@@ -142,6 +142,13 @@ trade calendar 5,701 行、index memberships 800 行。完整读取耗时 16:43.
 完成条件：默认 252/63 walk-forward 可以完成，结果包含扣费后表现、回撤、regime slice、参数
 敏感性和 benchmark 对比。结果不要求盈利，也不能作为 M4 正式完成证据。
 
+状态：2026-08-11 已完成。固定 2024-06-07 成分并集共 800 个标的，2024-06-07 至
+2026-08-10 共 528 个交易日；有界视图双轨各读取 468,108 行，默认 252/63 形成 4 个完整 fold
+和 252 个 OOS observation。两组参数均生成 528 条逐日记录，完整运行耗时 21:11.26、峰值 RSS
+1,225,424 KiB。artifact 明确记录 `survivorship_bias=true`、`formal_m4_oos=false`、非官方固定
+成分等权 benchmark、未应用 corporate action 和未使用 09:35 特征；文件与源码 provenance
+均已独立校验。
+
 ### M8.2：point-in-time universe 与 benchmark
 
 交付：预先声明的历史成分、historical universe、benchmark 日期网格和覆盖报告。

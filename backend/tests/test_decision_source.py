@@ -150,6 +150,12 @@ def test_snapshot_source_pairs_signal_and_execution_prices(tmp_path: Path) -> No
     assert snapshot.snapshot_id == snapshot.snapshot_id
     assert len(snapshot.source_payloads) == 9
 
+    snapshot_id = snapshot.snapshot_id
+    assert snapshot.bars_for(CODE) == snapshot.bars
+    assert snapshot.state_on(CODE, days[-1]) is current
+    assert snapshot.rule_for(CODE).code == CODE
+    assert snapshot.snapshot_id == snapshot_id
+
 
 def test_opening_snapshot_uses_prior_daily_rows_and_current_0935_bar(
     tmp_path: Path,

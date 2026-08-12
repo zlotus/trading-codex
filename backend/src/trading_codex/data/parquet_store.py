@@ -7,6 +7,7 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from trading_codex.data.models import DataValidationError, FutureDataError, MergeResult
@@ -25,6 +26,7 @@ PROVENANCE_COLUMNS = {
 class ParquetDataStore:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self._validated_files: dict[Path, tuple[int, int]] = {}
 
     def path_for(self, dataset: str) -> Path:
         self._spec(dataset)
@@ -68,6 +70,109 @@ class ParquetDataStore:
                     f"duplicate business keys in normalized dataset {dataset}"
                 )
         return table
+
+    def scan(
+        self,
+        dataset: str,
+        *,
+        as_of: datetime,
+        columns: Iterable[str] | None = None,
+        equal: dict[str, Any] | None = None,
+        contained_in: dict[str, Iterable[Any]] | None = None,
+        ranges: dict[str, tuple[Any | None, Any | None]] | None = None,
+    ) -> pa.Table:
+        """Read a point-in-time subset with Arrow predicate and column pushdown."""
+        spec = self._spec(dataset)
+        boundary = require_aware(as_of, field="as_of")
+        requested = self._requested_columns(spec, columns)
+        expression = ds.field("available_at") <= pa.scalar(boundary)
+        expression = self._scan_expression(
+            spec,
+            expression,
+            equal=equal or {},
+            contained_in=contained_in or {},
+            ranges=ranges or {},
+        )
+        scan_columns = tuple(dict.fromkeys((*requested, *spec.keys)))
+        tables = list(
+            self._filtered_tables(
+                dataset,
+                expression=expression,
+                columns=scan_columns,
+            )
+        )
+        if not tables:
+            return pa.Table.from_pylist([], schema=self._projected_schema(spec, requested))
+        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        if table.num_rows:
+            table = table.sort_by([(key, "ascending") for key in spec.keys])
+            self._ensure_unique_sorted_keys(table, spec.keys, dataset=dataset)
+        return table.select(requested)
+
+    def daily_bar_series(
+        self,
+        *,
+        codes: Iterable[str],
+        start_date: date,
+        end_date: date,
+        as_of: datetime,
+        adjustment_flags: Iterable[str] = ("3",),
+        columns: Iterable[str] | None = None,
+    ) -> dict[tuple[str, str], pa.Table]:
+        """Return bounded daily-bar tables grouped by ``(code, adjustment_flag)``."""
+        spec = self._spec("daily_bars")
+        boundary = require_aware(as_of, field="as_of")
+        if end_date < start_date:
+            raise ValueError("end_date must not precede start_date")
+        if end_date > boundary.astimezone(SHANGHAI).date():
+            raise FutureDataError("daily-bar end_date exceeds as_of")
+        code_values = tuple(sorted(set(codes)))
+        flag_values = tuple(sorted(set(adjustment_flags)))
+        requested = self._requested_columns(spec, columns)
+        if not code_values or not flag_values:
+            return {}
+
+        required = ("trade_date", "code", "adjustment_flag")
+        scan_columns = tuple(dict.fromkeys((*requested, *required)))
+        expression = (
+            (ds.field("available_at") <= pa.scalar(boundary))
+            & ds.field("code").isin(code_values)
+            & ds.field("adjustment_flag").isin(flag_values)
+            & (ds.field("trade_date") >= pa.scalar(start_date))
+            & (ds.field("trade_date") <= pa.scalar(end_date))
+        )
+        grouped: dict[tuple[str, str], list[pa.Table]] = {}
+        for table in self._filtered_tables(
+            "daily_bars",
+            expression=expression,
+            columns=scan_columns,
+        ):
+            if table.num_rows == 0:
+                continue
+            codes_in_table = pc.unique(table["code"]).to_pylist()
+            flags_in_table = pc.unique(table["adjustment_flag"]).to_pylist()
+            for code in codes_in_table:
+                for flag in flags_in_table:
+                    selected = table.filter(
+                        pc.and_(
+                            pc.equal(table["code"], pa.scalar(code)),
+                            pc.equal(table["adjustment_flag"], pa.scalar(flag)),
+                        )
+                    )
+                    if selected.num_rows:
+                        grouped.setdefault((code, flag), []).append(selected)
+
+        result: dict[tuple[str, str], pa.Table] = {}
+        for key, parts in sorted(grouped.items()):
+            table = pa.concat_tables(parts) if len(parts) > 1 else parts[0]
+            table = table.sort_by([("trade_date", "ascending")])
+            self._ensure_unique_sorted_keys(
+                table,
+                required,
+                dataset="daily_bars",
+            )
+            result[key] = table.select(requested)
+        return result
 
     def segment_path(self, dataset: str, segment_id: str) -> Path:
         self._spec(dataset)
@@ -127,12 +232,7 @@ class ParquetDataStore:
         )
 
     def rows_as_of(self, dataset: str, *, as_of: datetime) -> list[dict[str, Any]]:
-        boundary = require_aware(as_of, field="as_of")
-        table = self.read(dataset)
-        if table.num_rows == 0:
-            return []
-        mask = pc.less_equal(table["available_at"], pa.scalar(boundary))
-        return table.filter(mask).to_pylist()
+        return self.scan(dataset, as_of=as_of).to_pylist()
 
     def daily_bars(
         self,
@@ -143,19 +243,19 @@ class ParquetDataStore:
         as_of: datetime,
         adjustment_flag: str = "3",
     ) -> list[dict[str, Any]]:
-        boundary = require_aware(as_of, field="as_of")
-        if end_date < start_date:
-            raise ValueError("end_date must not precede start_date")
-        if end_date > boundary.astimezone(SHANGHAI).date():
-            raise FutureDataError("daily-bar end_date exceeds as_of")
-        code_set = set(codes)
-        return [
-            row
-            for row in self.rows_as_of("daily_bars", as_of=boundary)
-            if row["code"] in code_set
-            and start_date <= row["trade_date"] <= end_date
-            and row["adjustment_flag"] == adjustment_flag
-        ]
+        series = self.daily_bar_series(
+            codes=codes,
+            start_date=start_date,
+            end_date=end_date,
+            as_of=as_of,
+            adjustment_flags=(adjustment_flag,),
+        )
+        if not series:
+            return []
+        table = pa.concat_tables(list(series.values()))
+        return table.sort_by(
+            [(key, "ascending") for key in self._spec("daily_bars").keys]
+        ).to_pylist()
 
     def five_minute_bars(
         self,
@@ -209,6 +309,123 @@ class ParquetDataStore:
         finally:
             if temporary_path is not None and temporary_path.exists():
                 temporary_path.unlink()
+
+    def _filtered_tables(
+        self,
+        dataset: str,
+        *,
+        expression: ds.Expression,
+        columns: tuple[str, ...],
+    ) -> Iterable[pa.Table]:
+        spec = self._spec(dataset)
+        paths = self._dataset_paths(dataset)
+        if not paths:
+            return
+        self._validate_files(dataset, paths)
+        arrow_dataset = ds.dataset(
+            [str(path) for path in paths],
+            format="parquet",
+            schema=spec.schema,
+        )
+        for fragment in arrow_dataset.get_fragments(filter=expression):
+            try:
+                table = fragment.to_table(columns=list(columns), filter=expression)
+            except (pa.ArrowException, OSError) as exc:
+                raise DataValidationError(
+                    f"cannot scan normalized dataset {dataset}: {fragment.path}"
+                ) from exc
+            if table.num_rows:
+                yield table
+
+    def _dataset_paths(self, dataset: str) -> list[Path]:
+        path = self.path_for(dataset)
+        return ([path] if path.exists() else []) + self.segment_paths(dataset)
+
+    def _validate_files(self, dataset: str, paths: Iterable[Path]) -> None:
+        spec = self._spec(dataset)
+        for path in paths:
+            try:
+                stat = path.stat()
+                identity = (stat.st_mtime_ns, stat.st_size)
+                if self._validated_files.get(path) == identity:
+                    continue
+                physical_schema = pq.read_schema(path)
+            except (pa.ArrowException, OSError) as exc:
+                raise DataValidationError(
+                    f"cannot read normalized dataset {dataset}: {path}"
+                ) from exc
+            if physical_schema != spec.schema:
+                raise DataValidationError(
+                    f"schema mismatch for normalized dataset {dataset}: {path}"
+                )
+            self._validated_files[path] = identity
+
+    @staticmethod
+    def _requested_columns(
+        spec: DatasetSpec,
+        columns: Iterable[str] | None,
+    ) -> tuple[str, ...]:
+        requested = tuple(columns) if columns is not None else tuple(spec.schema.names)
+        if len(requested) != len(set(requested)):
+            raise ValueError("scan columns must be unique")
+        unknown = set(requested) - set(spec.schema.names)
+        if unknown:
+            raise ValueError(f"unknown columns for {spec.name}: {sorted(unknown)}")
+        return requested
+
+    @staticmethod
+    def _projected_schema(spec: DatasetSpec, columns: Iterable[str]) -> pa.Schema:
+        return pa.schema([spec.schema.field(column) for column in columns])
+
+    @staticmethod
+    def _scan_expression(
+        spec: DatasetSpec,
+        expression: ds.Expression,
+        *,
+        equal: dict[str, Any],
+        contained_in: dict[str, Iterable[Any]],
+        ranges: dict[str, tuple[Any | None, Any | None]],
+    ) -> ds.Expression:
+        filtered_columns = set(equal) | set(contained_in) | set(ranges)
+        unknown = filtered_columns - set(spec.schema.names)
+        if unknown:
+            raise ValueError(f"unknown filters for {spec.name}: {sorted(unknown)}")
+        for column, value in equal.items():
+            expression &= ds.field(column) == pa.scalar(value)
+        for column, values in contained_in.items():
+            accepted = tuple(values)
+            if not accepted:
+                expression &= ds.scalar(False)
+            else:
+                expression &= ds.field(column).isin(accepted)
+        for column, (lower, upper) in ranges.items():
+            if lower is not None:
+                expression &= ds.field(column) >= pa.scalar(lower)
+            if upper is not None:
+                expression &= ds.field(column) <= pa.scalar(upper)
+        return expression
+
+    @staticmethod
+    def _ensure_unique_sorted_keys(
+        table: pa.Table,
+        keys: Iterable[str],
+        *,
+        dataset: str,
+    ) -> None:
+        if table.num_rows < 2:
+            return
+        duplicate = None
+        for key in keys:
+            equal = pc.equal(
+                table[key].slice(1),
+                table[key].slice(0, table.num_rows - 1),
+            )
+            duplicate = equal if duplicate is None else pc.and_(duplicate, equal)
+        assert duplicate is not None
+        if pc.any(duplicate).as_py():
+            raise DataValidationError(
+                f"duplicate business keys in normalized dataset {dataset}"
+            )
 
     @staticmethod
     def _spec(dataset: str) -> DatasetSpec:

@@ -23,6 +23,7 @@ trading-codex-baostock = "trading_codex.baostock_download.download_cli:main"
 trading-codex-requirements = "trading_codex.data.requirements_cli:main"
 trading-codex-ai-research = "trading_codex.ai.research_cli:main"
 trading-codex-ops = "trading_codex.operations.cli:main"
+trading-codex-m8-smoke = "trading_codex.backtest.m8_smoke:main"
 
 [dependency-groups]
 dev = [
