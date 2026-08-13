@@ -67,5 +67,6 @@ Milestone 4 的研究 contract 位于共享决策核心，不依赖 RQAlpha 策�
 
 这些数值来自固定 2024-06-07 成分、非官方固定成分等权 benchmark，且未应用 corporate action；
 artifact 明确设置 `survivorship_bias=true` 和 `formal_m4_oos=false`。它只证明共享决策、成本、
-RQAlpha 和统计路径能在真实规模完整运行。补齐 point-in-time universe、正式 benchmark、
-corporate action 和必要的 09:35 数据，并冻结 untouched test 边界后，才能生成 M4 正式报告。
+RQAlpha 和统计路径能在真实规模完整运行。M8.2 已补齐 point-in-time universe 和中证800
+benchmark；仍须补 corporate action 和经批准范围内的 09:35 数据，并冻结 untouched test 边界，
+才能生成 M4 正式报告。

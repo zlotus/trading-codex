@@ -8,6 +8,10 @@ from typing import Any
 from trading_codex.data.cached_client import CachedBaoStockClient
 from trading_codex.data.models import CacheMissError
 from trading_codex.data.parquet_store import ParquetDataStore
+from trading_codex.data.point_in_time import (
+    DEFAULT_BENCHMARK_CODE,
+    assess_point_in_time_coverage,
+)
 from trading_codex.data.quality import (
     assess_opening_0935_coverage,
     inspect_data_quality,
@@ -146,6 +150,27 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(2)
         return
 
+    if args.command == "assess-point-in-time":
+        report = assess_point_in_time_coverage(
+            normalized_store,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            as_of=args.as_of,
+            benchmark_code=args.benchmark_code,
+        )
+        path = write_report(report, artifacts_root / "data-quality")
+        print(
+            json.dumps(
+                {**report.as_dict(), "report": str(path)},
+                default=_json_value,
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        if report.status != "passed":
+            raise SystemExit(2)
+        return
+
     parser.error(f"unknown command: {args.command}")
 
 
@@ -186,6 +211,14 @@ def _parser() -> argparse.ArgumentParser:
     _date_range(coverage)
     coverage.add_argument("--codes", required=True, help="comma-separated BaoStock codes")
     coverage.add_argument("--as-of", type=_datetime, default=datetime.now(UTC))
+
+    point_in_time = commands.add_parser(
+        "assess-point-in-time",
+        help="validate daily index universe, benchmark, and dual-price coverage",
+    )
+    _date_range(point_in_time)
+    point_in_time.add_argument("--benchmark-code", default=DEFAULT_BENCHMARK_CODE)
+    point_in_time.add_argument("--as-of", type=_datetime, default=datetime.now(UTC))
     return parser
 
 

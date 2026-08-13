@@ -149,8 +149,9 @@ BaoStock 请求。
 M8.0 已于 2026-08-11 完成：固定 2024-06-07 成分的 1,602 条基础请求已补齐 800 个股票从
 2011-01-01 至 2026-08-10 的双价格日线，并完成离线 inspect、干净 ingest 和完整性验收。
 M8.1 也已完成：固定成分、528 个交易日、默认 252/63 和两组参数的真实规模 EOD smoke 已生成
-带完整 provenance 的 artifact。下一步 M8.2-M8.4 另行补 point-in-time universe、benchmark、
-corporate action 和必要的 09:35 数据，生成正式 untouched OOS artifact。
+带完整 provenance 的 artifact。M8.2 已补齐 3,789 个交易日的 point-in-time universe、中证800
+benchmark、成员双价格和 fail-closed 覆盖报告。下一步 M8.3/M8.4 补 corporate action、经批准
+范围内的 09:35 数据并冻结正式 untouched OOS artifact。
 
 API 优先级、M8.0-M8.4 切片和完成边界见
 [`baostock-data-plan.md`](baostock-data-plan.md)。固定当前成分的 smoke 有幸存者偏差，不能关闭
@@ -160,5 +161,9 @@ M4；M4 正式报告经人工审阅前，M6 timer、forward observation 和 live
 
 - Qlib 机器学习因子模型。
 - 为时点 AI 上下文采集新闻和公告。
-- 付费市场数据 provider 和自动化券商 gateway。
-- 决策周期短于 5 分钟的日内策略。
+- 付费市场数据 provider。
+
+## 范围外
+
+- 自动化券商 gateway 或任何代替用户执行交易的路径。
+- 决策周期短于 5 分钟的日内策略、高频交易或亚分钟执行。

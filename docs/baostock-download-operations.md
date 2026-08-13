@@ -168,7 +168,79 @@ walk-forward report 应保持一致。
 
 该命令明确是固定成分 EOD 工程 smoke：有幸存者偏差，使用非官方等权 benchmark，不应用
 corporate action，也不使用 09:35 opening 特征。输出中的 `formal_m4_oos=false` 不能被改写；
-M4 正式报告仍需要 M8.2-M8.4 数据和冻结边界。
+M4 正式报告仍需要 M8.3/M8.4 数据和冻结边界。
+
+## M8.2 point-in-time universe 与 benchmark（已完成）
+
+M8.2 按 ADR-0011 冻结 2011-01-01 至 2026-08-10。第一阶段只根据本地 trade calendar 生成
+逐交易日沪深300、中证500、historical universe 和一条中证800 `sh.000906` 日线请求：
+
+```bash
+uv run --frozen trading-codex-requirements point-in-time \
+  --data-root /mnt/exos_1t/quant/baostock \
+  --start-date 2011-01-01 \
+  --end-date 2026-08-10 \
+  --benchmark-code sh.000906 \
+  > /tmp/trading-codex-m82-point-in-time.jsonl
+
+wc -l /tmp/trading-codex-m82-point-in-time.jsonl
+```
+
+完整交易日历应生成 11,368 条唯一 exact request。先用 `trading-codex-baostock` 严格串行下载，
+再独立执行 `inspect-raw` 和 `ingest-raw`。历史成分进入 normalized 后，第二阶段才生成全部曾任
+成分的双价格请求：
+
+```bash
+uv run --frozen trading-codex-requirements member-daily \
+  --data-root /mnt/exos_1t/quant/baostock \
+  --start-date 2011-01-01 \
+  --end-date 2026-08-10 \
+  > /tmp/trading-codex-m82-member-daily.jsonl
+
+uv run --frozen trading-codex-baostock \
+  --data-root /mnt/exos_1t/quant/baostock \
+  --requests /tmp/trading-codex-m82-member-daily.jsonl
+```
+
+已有 M8.0 成员的 exact 日线文件会零网络跳过。第二阶段再次 inspect/ingest 后执行离线硬门禁：
+
+```bash
+uv run --frozen trading-codex-data \
+  --data-root /mnt/exos_1t/quant/baostock \
+  --artifacts-root /mnt/exos_1t/quant/baostock/artifacts \
+  assess-point-in-time \
+  --start-date 2011-01-01 \
+  --end-date 2026-08-10 \
+  --benchmark-code sh.000906 \
+  --as-of 2026-08-12T12:00:00+08:00
+```
+
+覆盖 contract 要求沪深300每日 300 个成员；中证500通常为 500 个，但只允许两个已核验区间共
+22 个交易日为 499 个。原始指数快照完整保留，策略有效成员再按 instrument
+`[ipo_date, out_date)` 过滤。报告只有在全部有效成员具备 historical universe、双价格轨和同日
+中证800行时才返回 `passed`，并固定写入 `formal_m4_oos=false`。
+
+2026-08-12 的真实运行结果：
+
+- 第一阶段 11,368 条请求；第二阶段 3,670 条请求，其中下载 2,070、跳过已有 1,600、剩余 0，
+  共 3,878 次 socket send；
+- 最终 `inspect-raw` 为 15,045/15,045 个有效 envelope，`warnings=[]`、`network_access=false`；
+- 最终 ingest 新发布 2,070 个日线 segment、6,751,082 行，去除 7,288 个相同业务键，冲突 0，
+  `warnings=[]`；
+- 原始指数快照有 3,031,178 个成员日；过滤 41 个上市区间外残留后，3,031,137 个有效成员日的
+  historical universe、前复权和不复权覆盖均为 100%，中证800为 3,789/3,789；
+- 499-member 中证500日期为 2019-01-07 至 2019-01-18 的 10 个交易日，以及 2021-09-13 至
+  2021-09-30 的 12 个交易日；不得补造第 500 个成员。
+
+最终覆盖报告写入：
+
+```text
+/mnt/exos_1t/quant/baostock/artifacts/data-quality/point-in-time-coverage-7737f3e2dae5ecd4.json
+```
+
+文件 SHA-256 为 `7737f3e2dae5ecd480c4c8c6bcbf2e218396df7f6f17759c0ab00c6f6a74a6b9`。
+历史成分是当前从 provider 取得的重建视图，`source_received_at` 不会被改写成历史日期；M8.2
+通过仍不代表正式 M4 OOS 完成。
 
 ## 请求限制
 
@@ -179,14 +251,16 @@ BaoStock 官方规则是同一公网 IP 每日不得超过 50,000 次 API 请求
 - 每次底层 socket send 发送前，追加到
   `~/.local/state/trading-codex/baostock/attempts/YYYY-MM-DD.jsonl`；
 - 按 `Asia/Shanghai` 自然日计数，默认在 40,000 次停止，并为 logout 保留最后一次；
+- 每次 socket 响应最多等待 60 秒；EOF、不完整响应或超时立即作为 `ProviderFailure` 停止，
+  不落盘当前请求的半截 raw；
 - 不提供并发、自动重试、rolling 24-hour、session/item 预算或人为最小间隔。
 
 计数包含 login、query、pagination、logout 和发送失败。旧 M7 SQLite 账本中同一天的 attempt
 也会加入总数，避免切换实现时把已发生请求归零。程序无法看到同一公网 IP 下其他机器或脚本的
 请求，因此下载期间仍不得运行第二个 BaoStock 客户端。
 
-达到 40,000 次时返回 `paused_daily_limit`，本地关闭 socket。次日重跑同一请求流，从缺失文件
-继续。
+达到 40,000 次时返回 `paused_daily_limit`，本地关闭 socket。达到上限或 transport 首错后，只能
+由操作员重新运行同一请求流；已有 exact request 文件零网络跳过，从第一个缺失文件继续。
 
 收到 `10001011` 时立即停止并写：
 
@@ -203,8 +277,8 @@ BaoStock 官方规则是同一公网 IP 每日不得超过 50,000 次 API 请求
 - backup target 不是下载前置条件。raw 下载完成后由独立备份流程复制并校验。
 - 固定 2024-06-07 成分的 15 年数据可用于真实数据 smoke test、性能测量和首次展示，但有
   幸存者偏差，不能据此关闭 M4 正式 OOS 验收。
-- 历史 5 分钟数据不属于默认基础集。精确 09:35 决策、历史 point-in-time universe、benchmark
-  和 corporate action 仍按具体研究需求另外生成 request。
+- 历史 5 分钟数据不属于默认基础集。精确 09:35 决策数据和 corporate action 仍按已批准的具体
+  研究需求另外生成 request；point-in-time universe 与 benchmark 已由 M8.2 补齐。
 
 ## 退出码
 

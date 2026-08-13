@@ -129,10 +129,13 @@ M7 简化入口至少覆盖：
 528 个交易日、默认 252/63 和两组参数的完整运行；峰值 RSS 约 1.17 GiB，artifact hash 与代码
 provenance 已独立校验。该报告显式为 `formal_m4_oos=false`，不能关闭 M4。
 
-### M8.2：M4 正式 OOS 数据
+### M8.2：point-in-time universe 与 benchmark（已完成）
 
-按研究 contract 另外生成 point-in-time universe、benchmark、双价格、corporate action 和必要的
-09:35 请求。下载工具不因该研究计划改变；正式报告仍需 untouched OOS 边界和完整 provenance。
+2026-08-12 已完成 3,789 个交易日的逐日指数成分、historical universe、中证800 benchmark 和
+全部曾任成员双价格。覆盖门禁在按 `[ipo_date, out_date)` 排除 41 个 provider 退市边界残留后，
+验证 3,031,137 个有效成员日三轨完整，全部 issue count 为 0。22 个真实 499-member 中证500日
+原样保留。该结果仅关闭 M8.2；corporate action、经批准范围内的 09:35 数据和 untouched OOS
+artifact 仍属于 M8.3/M8.4。
 
 M5 的 live LLM key/provider 继续暂缓。M6 的 60 个真实前瞻 observation 不能由历史下载替代，
 但 M8 可先解除其底层真实数据分析阻塞。

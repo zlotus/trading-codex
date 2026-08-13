@@ -1,4 +1,5 @@
 import importlib
+import zlib
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +24,8 @@ from trading_codex.baostock_download.runtime import (
 )
 
 ProgressCallback = Callable[[dict[str, object]], None]
+SOCKET_RESPONSE_TIMEOUT_SECONDS = 60.0
+SOCKET_RESPONSE_TERMINATOR = b"<![CDATA[]]>\n"
 
 
 class SocketCounterGate:
@@ -74,7 +77,7 @@ class SocketCounterGate:
         self.network_attempts += 1
         if self._request is not None:
             self._request_sends += 1
-        response = self._original_send(message)
+        response = self._send_message(message)
         code = self._response_code(response)
         if code == BLACKLIST_ERROR_CODE:
             self.counter.mark_blacklisted(
@@ -89,6 +92,62 @@ class SocketCounterGate:
                 f"BaoStock returned blacklist error {BLACKLIST_ERROR_CODE}"
             )
         return response
+
+    def _send_message(self, message: str) -> Any:
+        context = getattr(self.socket_module, "context", None)
+        provider_socket = getattr(context, "default_socket", None)
+        if context is None:
+            return self._original_send(message)
+        if provider_socket is None:
+            raise ProviderFailure("BaoStock provider socket is not connected")
+
+        previous_timeout = provider_socket.gettimeout()
+        try:
+            provider_socket.settimeout(SOCKET_RESPONSE_TIMEOUT_SECONDS)
+            provider_socket.sendall((message + "\n").encode("utf-8"))
+            received = bytearray()
+            while not received.endswith(SOCKET_RESPONSE_TERMINATOR):
+                chunk = provider_socket.recv(8192)
+                if not chunk:
+                    raise ProviderFailure(
+                        "BaoStock closed the socket before a complete response"
+                    )
+                received.extend(chunk)
+            return self._decode_response(bytes(received))
+        except ProviderFailure:
+            raise
+        except TimeoutError as exc:
+            raise ProviderFailure("BaoStock socket response timed out") from exc
+        except (OSError, UnicodeError, ValueError, zlib.error) as exc:
+            raise ProviderFailure("BaoStock socket transport failed") from exc
+        finally:
+            try:
+                provider_socket.settimeout(previous_timeout)
+            except OSError:
+                pass
+
+    def _decode_response(self, response: bytes) -> str:
+        header_length = getattr(self.protocol_constants, "MESSAGE_HEADER_LENGTH", None)
+        separator = getattr(self.protocol_constants, "MESSAGE_SPLIT", None)
+        compressed_types = getattr(
+            self.protocol_constants,
+            "COMPRESSED_MESSAGE_TYPE_TUPLE",
+            (),
+        )
+        if not isinstance(header_length, int) or not isinstance(separator, str):
+            raise ProviderFailure("BaoStock protocol constants are invalid")
+        if len(response) < header_length:
+            raise ProviderFailure("BaoStock response header is incomplete")
+        header = response[:header_length].decode("utf-8")
+        if compressed_types:
+            header_parts = header.split(separator)
+            if len(header_parts) < 3:
+                raise ProviderFailure("BaoStock response header is malformed")
+            if header_parts[1] in compressed_types:
+                body_length = int(header_parts[2])
+                compressed = response[header_length : header_length + body_length]
+                return header + zlib.decompress(compressed).decode("utf-8")
+        return response.decode("utf-8")
 
     def _kind(self) -> str:
         if self._phase != "request":

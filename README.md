@@ -1,14 +1,16 @@
 # Trading Codex
 
-Trading Codex 是一个个人使用的 AI 辅助 A 股交易决策系统。它将严格受
-`as_of` 时间边界约束的历史研究、开盘时段行情快照、可审计的策略配置、
-确定性风险控制，以及人工成交后的仓位同步整合到同一个工作区中。
+Trading Codex 是一个个人使用的 A 股行情分析与低频策略工作区。它将严格受
+`as_of` 时间边界约束的历史研究、低频策略生成/回测/调试、可审计的交易提案、
+确定性风险控制，以及人工成交和交易记录整合到同一个工作区中。AI 只提供受约束的研究与
+分配提案；系统不连接券商自动执行，也不面向高频或亚分钟交易。
 
 仓库当前并行推进 Milestone 4 的真实数据验收，以及 Milestone 5/6 的受限 AI 与前瞻运维
 contract。共享决策内核已包含可解释市场状态、四策略池、受约束分配和 walk-forward 评估；
 运维层已包含 provider health gate、append-only 告警、并发 attempt lease、一致性备份、
-replay 和 60 日归因门槛。固定 2024-06-07 成分的 M8.0 基础集已完成，但仍有幸存者偏差，且
-尚缺正式 OOS 所需的 point-in-time universe、benchmark、corporate action 和历史 09:35 覆盖。
+replay 和 60 日归因门槛。M8.2 已补齐 2011-01-01 至 2026-08-10 的逐交易日沪深300/中证500
+universe、中证800 benchmark 和成员双价格覆盖；正式 OOS 仍缺真实 corporate action、经批准
+范围内的 09:35 覆盖及冻结后的 M8.4 artifact。
 daily task、实时行情与模型 adapter 也尚未接入，因此系统不会启动前瞻调度或 live AI inference，
 真实观察仍为 0/60 个交易日。主应用和数据处理默认完全离线，只有独立 raw 下载器可访问 BaoStock；
 具体幂等和限流规则见

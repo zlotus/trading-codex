@@ -8,7 +8,7 @@ from types import ModuleType
 
 import pytest
 
-from trading_codex.baostock_download.downloader import download
+from trading_codex.baostock_download.downloader import SocketCounterGate, download
 from trading_codex.baostock_download.errors import (
     ProviderBlacklisted,
     ProviderFailure,
@@ -78,6 +78,24 @@ class FakeSocket:
         if self.after_send is not None:
             self.after_send()
         return f"HEAD{code}|result|"
+
+
+class EofSocket:
+    def __init__(self) -> None:
+        self.timeout: float | None = None
+        self.sent: list[bytes] = []
+
+    def gettimeout(self) -> float | None:
+        return self.timeout
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeout = value
+
+    def sendall(self, message: bytes) -> None:
+        self.sent.append(message)
+
+    def recv(self, _size: int) -> bytes:
+        return b""
 
 
 class FakeBaoStock:
@@ -187,6 +205,15 @@ def _socket_module(fake: FakeSocket) -> ModuleType:
     return module
 
 
+def _eof_socket_module(fake: EofSocket) -> ModuleType:
+    context = ModuleType("fake_context")
+    context.default_socket = fake
+    module = ModuleType("fake_socket")
+    module.context = context
+    module.send_msg = lambda _message: "unexpected fallback"
+    return module
+
+
 def _download(
     tmp_path: Path,
     requests: tuple[DownloadRequest, ...],
@@ -240,6 +267,24 @@ def test_download_is_serial_query_file_idempotent_and_raw_only(tmp_path: Path) -
     assert second["network_access"] is False
     assert second["skipped_existing"] == 2
     assert second_socket.messages == []
+
+
+def test_socket_eof_fails_instead_of_spinning(tmp_path: Path) -> None:
+    fake_socket = EofSocket()
+    socket_module = _eof_socket_module(fake_socket)
+    gate = SocketCounterGate(
+        counter=DailyAttemptCounter(tmp_path / "state"),
+        socket_module=socket_module,
+        protocol_constants=_protocol(),
+    )
+    gate.bind_login()
+
+    with gate.installed(), pytest.raises(ProviderFailure, match="closed the socket"):
+        socket_module.send_msg("login")
+
+    assert fake_socket.sent == [b"login\n"]
+    assert fake_socket.timeout is None
+    assert gate.network_attempts == 1
 
 
 def test_download_import_path_excludes_legacy_and_processing_modules() -> None:
@@ -464,6 +509,7 @@ def test_blacklist_response_writes_marker_and_blocks_later_network(tmp_path: Pat
 
 def test_offline_envelope_check_and_ingest_are_independently_idempotent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _request("2024-01-02")
     fake_socket = FakeSocket()
@@ -477,6 +523,10 @@ def test_offline_envelope_check_and_ingest_are_independently_idempotent(
     inspection = inspect_raw_envelopes(tmp_path / "data")
     assert inspection["status"] == "passed"
     first = ingest_raw_envelopes(tmp_path / "data")
+    monkeypatch.setattr(
+        "trading_codex.data.raw_processing.normalize_batch",
+        lambda *_args: pytest.fail("published segment must skip normalization"),
+    )
     second = ingest_raw_envelopes(tmp_path / "data")
     assert first["status"] == "passed"
     assert first["datasets"][0]["published_segments"] == 1
@@ -485,6 +535,29 @@ def test_offline_envelope_check_and_ingest_are_independently_idempotent(
     assert ParquetDataStore(tmp_path / "data" / "normalized").read(
         "trade_calendar"
     ).num_rows == 1
+
+
+def test_ingest_revalidates_an_existing_published_segment(tmp_path: Path) -> None:
+    request = _request("2024-01-02")
+    fake_socket = FakeSocket()
+    socket_module = _socket_module(fake_socket)
+    _download(
+        tmp_path,
+        (request,),
+        provider=FakeBaoStock(socket_module),
+        socket_module=socket_module,
+    )
+    first = ingest_raw_envelopes(tmp_path / "data")
+    segment = next(
+        (tmp_path / "data" / "normalized" / ".segments" / "trade_calendar").iterdir()
+    )
+    segment.write_bytes(b"not parquet")
+
+    second = ingest_raw_envelopes(tmp_path / "data")
+
+    assert first["status"] == "passed"
+    assert second["status"] == "warnings"
+    assert "cannot read normalized trade_calendar" in second["warnings"][0]["reason"]
 
 
 def test_ingest_normalizes_suspended_blank_volume_and_exact_query_price_track(
@@ -544,7 +617,9 @@ def test_ingest_rejects_unexpected_provider_adjustment_flag_mismatch(
     assert "differs from exact query" in report["warnings"][0]["reason"]
 
 
-def test_ingest_refuses_cross_payload_business_key_overlap(tmp_path: Path) -> None:
+def test_ingest_deduplicates_identical_cross_payload_business_key_overlap(
+    tmp_path: Path,
+) -> None:
     requests = (
         DownloadRequest.from_dict(
             {
@@ -575,13 +650,130 @@ def test_ingest_refuses_cross_payload_business_key_overlap(tmp_path: Path) -> No
 
     report = ingest_raw_envelopes(tmp_path / "data")
 
-    assert report["status"] == "warnings"
+    assert report["status"] == "passed"
     assert report["datasets"][0]["published_segments"] == 1
     assert report["datasets"][0]["skipped"] == 1
-    assert "business keys overlap" in report["warnings"][0]["reason"]
+    assert report["datasets"][0]["deduplicated_rows"] == 1
+    assert report["datasets"][0]["conflicting_rows"] == 0
+    assert report["warnings"] == []
     assert ParquetDataStore(tmp_path / "data" / "normalized").read(
         "trade_calendar"
     ).num_rows == 1
+
+
+def test_ingest_keeps_non_overlapping_rows_from_overlapping_payloads(
+    tmp_path: Path,
+) -> None:
+    requests = (
+        DownloadRequest.from_dict(
+            {
+                "operation": "trade_calendar",
+                "query": {"start_date": "2024-01-01", "end_date": "2024-01-02"},
+            }
+        ),
+        DownloadRequest.from_dict(
+            {
+                "operation": "trade_calendar",
+                "query": {"start_date": "2024-01-02", "end_date": "2024-01-03"},
+            }
+        ),
+    )
+    rows_by_request = (
+        (
+            {"calendar_date": "2024-01-01", "is_trading_day": "1"},
+            {"calendar_date": "2024-01-02", "is_trading_day": "1"},
+        ),
+        (
+            {"calendar_date": "2024-01-02", "is_trading_day": "1"},
+            {"calendar_date": "2024-01-03", "is_trading_day": "1"},
+        ),
+    )
+    store = QueryRawFileStore(tmp_path / "data")
+    for request, rows in zip(requests, rows_by_request, strict=True):
+        store.persist(
+            request,
+            ProviderBatch(
+                source="baostock",
+                operation=request.operation,
+                query=request.raw_query,
+                fields=request.expected_fields,
+                rows=rows,
+                received_at=datetime(2024, 1, 4, tzinfo=UTC),
+            ),
+        )
+
+    report = ingest_raw_envelopes(tmp_path / "data")
+    normalized = ParquetDataStore(tmp_path / "data" / "normalized").read(
+        "trade_calendar"
+    )
+
+    assert report["status"] == "passed"
+    assert report["datasets"][0]["published_segments"] == 2
+    assert report["datasets"][0]["rows"] == 3
+    assert report["datasets"][0]["deduplicated_rows"] == 1
+    assert report["datasets"][0]["conflicting_rows"] == 0
+    assert report["warnings"] == []
+    assert normalized["calendar_date"].to_pylist() == [
+        date(2024, 1, 1),
+        date(2024, 1, 2),
+        date(2024, 1, 3),
+    ]
+
+
+def test_ingest_rejects_conflicting_cross_payload_business_key_overlap(
+    tmp_path: Path,
+) -> None:
+    requests = (
+        DownloadRequest.from_dict(
+            {
+                "operation": "trade_calendar",
+                "query": {"start_date": "2024-01-01", "end_date": "2024-01-02"},
+            }
+        ),
+        DownloadRequest.from_dict(
+            {
+                "operation": "trade_calendar",
+                "query": {"start_date": "2024-01-02", "end_date": "2024-01-03"},
+            }
+        ),
+    )
+    rows_by_request = (
+        (
+            {"calendar_date": "2024-01-01", "is_trading_day": "1"},
+            {"calendar_date": "2024-01-02", "is_trading_day": "1"},
+        ),
+        (
+            {"calendar_date": "2024-01-02", "is_trading_day": "0"},
+            {"calendar_date": "2024-01-03", "is_trading_day": "1"},
+        ),
+    )
+    store = QueryRawFileStore(tmp_path / "data")
+    for request, rows in zip(requests, rows_by_request, strict=True):
+        store.persist(
+            request,
+            ProviderBatch(
+                source="baostock",
+                operation=request.operation,
+                query=request.raw_query,
+                fields=request.expected_fields,
+                rows=rows,
+                received_at=datetime(2024, 1, 4, tzinfo=UTC),
+            ),
+        )
+
+    report = ingest_raw_envelopes(tmp_path / "data")
+    normalized = ParquetDataStore(tmp_path / "data" / "normalized").read(
+        "trade_calendar"
+    )
+
+    assert report["status"] == "warnings"
+    assert report["datasets"][0]["published_segments"] == 1
+    assert report["datasets"][0]["conflicting_rows"] == 1
+    assert "business keys conflict" in report["warnings"][0]["reason"]
+    assert normalized["calendar_date"].to_pylist() == [
+        date(2024, 1, 1),
+        date(2024, 1, 2),
+    ]
 
 
 def test_base_daily_requirements_use_index_union_and_both_price_tracks(

@@ -109,6 +109,41 @@ class ParquetDataStore:
             self._ensure_unique_sorted_keys(table, spec.keys, dataset=dataset)
         return table.select(requested)
 
+    def read_columns(
+        self,
+        dataset: str,
+        *,
+        columns: Iterable[str],
+        equal: dict[str, Any] | None = None,
+        contained_in: dict[str, Iterable[Any]] | None = None,
+        ranges: dict[str, tuple[Any | None, Any | None]] | None = None,
+    ) -> pa.Table:
+        """Read a projection with optional filters and full business-key checks."""
+        spec = self._spec(dataset)
+        requested = self._requested_columns(spec, columns)
+        scan_columns = tuple(dict.fromkeys((*requested, *spec.keys)))
+        expression = self._scan_expression(
+            spec,
+            ds.scalar(True),
+            equal=equal or {},
+            contained_in=contained_in or {},
+            ranges=ranges or {},
+        )
+        tables = list(
+            self._filtered_tables(
+                dataset,
+                expression=expression,
+                columns=scan_columns,
+            )
+        )
+        if not tables:
+            return pa.Table.from_pylist([], schema=self._projected_schema(spec, requested))
+        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        if table.num_rows:
+            table = table.sort_by([(key, "ascending") for key in spec.keys])
+            self._ensure_unique_sorted_keys(table, spec.keys, dataset=dataset)
+        return table.select(requested)
+
     def daily_bar_series(
         self,
         *,

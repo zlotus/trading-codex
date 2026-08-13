@@ -15,3 +15,5 @@ ADR 用于保存长期有效的项目决策及其依据。已接受的记录属�
 | [0008](0008-manifest-driven-serial-baostock-downloader.md) | Superseded by ADR-0009 | 使用清单驱动且全局串行的独立 BaoStock 下载边界 |
 | [0009](0009-data-root-directed-baostock-storage.md) | Superseded by ADR-0010 | 由 data root 直接决定 BaoStock 落盘位置 |
 | [0010](0010-unix-style-raw-baostock-pipeline.md) | Accepted | 使用 raw-only、存在即跳过的 Unix 风格 BaoStock 工具链 |
+| [0011](0011-point-in-time-index-universe-and-csi800-benchmark.md) | Accepted | 使用逐交易日指数成分和中证800基准 |
+| [0012](0012-low-frequency-research-and-manual-execution-scope.md) | Accepted | 限定为低频研究和人工交易记录工作区 |

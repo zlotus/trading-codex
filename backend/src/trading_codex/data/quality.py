@@ -10,6 +10,7 @@ from typing import Any
 
 from trading_codex.data.models import FutureDataError
 from trading_codex.data.parquet_store import ParquetDataStore
+from trading_codex.data.point_in_time import PointInTimeCoverageReport
 from trading_codex.data.schemas import DATASET_SPECS
 from trading_codex.data.time import SHANGHAI, require_aware
 
@@ -247,10 +248,18 @@ def assess_opening_0935_coverage(
     )
 
 
-def write_report(report: DataQualityReport | OpeningCoverageReport, directory: Path) -> Path:
+def write_report(
+    report: DataQualityReport | OpeningCoverageReport | PointInTimeCoverageReport,
+    directory: Path,
+) -> Path:
     payload = _json_bytes(report.as_dict())
     digest = hashlib.sha256(payload).hexdigest()[:16]
-    kind = "data-quality" if isinstance(report, DataQualityReport) else "opening-0935-coverage"
+    if isinstance(report, DataQualityReport):
+        kind = "data-quality"
+    elif isinstance(report, OpeningCoverageReport):
+        kind = "opening-0935-coverage"
+    else:
+        kind = "point-in-time-coverage"
     path = directory / f"{kind}-{digest}.json"
     if path.exists():
         return path

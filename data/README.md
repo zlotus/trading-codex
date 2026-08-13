@@ -28,6 +28,11 @@ normalized 价格固定为 `decimal128(20,6)`；更高精度的 provider 价格�
 `query_zz500_stocks` 和 `query_dividend_data` 的 endpoint contract、provider adapter
 与 normalizer，并新增 point-in-time `index_memberships` 数据集。
 
+M8.2 完整保留每个交易日的沪深300和中证500原始快照，再按 instrument
+`[ipo_date, out_date)` 过滤策略有效成员，并用同日 `historical_universe` 校验成员和交易状态。
+官方 benchmark 固定为中证800 `sh.000906` 的不复权 `daily_bars`，收益使用 provider
+`pctChg / 100`。不得用最近成分快照填充缺失日期，也不得用成分股等权收益替代缺失 benchmark。
+
 `query_history_k_data_plus` 日线双价格和沪深300/中证500成分单项 pilot 已于 2026-08-10
 通过。固定 2024-06-07 成分的 M8.0 基础集已于 2026-08-11 完成：800 个标的从 2011-01-01
 至 2026-08-10 的前复权/不复权日线共 4,973,298 行。该固定成分数据有幸存者偏差，不能作为
@@ -85,6 +90,12 @@ uv run trading-codex-data assess-0935 \
   --end-date 2024-06-07 \
   --codes sh.600000 \
   --as-of 2026-08-08T12:00:00+08:00
+
+uv run trading-codex-data assess-point-in-time \
+  --start-date 2011-01-01 \
+  --end-date 2026-08-10 \
+  --benchmark-code sh.000906 \
+  --as-of 2026-08-12T12:00:00+08:00
 ```
 
 报告写入 `artifacts/data-quality/`。覆盖率只描述命令指定的标的和日期，不能从局部
@@ -92,3 +103,8 @@ uv run trading-codex-data assess-0935 \
 universe 和全部预期 09:35 bar 都完整时才返回 `status=passed`；否则列出
 `missing_calendar_dates`、`missing_universe_dates` 或缺失标的日，并以退出码 `2`
 fail closed。
+
+`assess-point-in-time` 要求沪深300每日 300 个成员；中证500通常为 500 个，只允许代码中已核验
+的 22 个交易日为 499 个。报告分别记录原始成员日、上市区间外残留和策略有效成员日；任一有效
+成员缺 historical universe 或双价格、缺中证800 benchmark、逐日 `available_at` 越界或交易
+状态不一致都会返回 `failed` 并以退出码 `2` 结束。报告始终声明 `formal_m4_oos=false`。

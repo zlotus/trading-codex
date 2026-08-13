@@ -5,9 +5,10 @@
 - BaoStock client：`00.9.30`
 - data root：`/mnt/exos_1t/quant/baostock`
 
-M8 的当前目标是先补齐可运行的真实基础数据，让 M4 决策、回测和 M5/M6 的数据相关分析在真实
-规模上运行；随后再补正式 OOS 所需的 point-in-time 数据。网络下载边界遵循 ADR-0010，研究
-需求、下载、预处理、质量和回测是相互独立的步骤。
+M8.0-M8.2 已补齐真实基础数据、固定成分工程 smoke，以及正式 OOS 所需的 point-in-time
+universe 和 benchmark 数据边界。下一步是 corporate action、经批准范围内的 09:35 数据和正式
+artifact 冻结。网络下载边界遵循 ADR-0010，研究需求、下载、预处理、质量和回测是相互独立的
+步骤。
 
 ## 数据流
 
@@ -154,6 +155,13 @@ trade calendar 5,701 行、index memberships 800 行。完整读取耗时 16:43.
 交付：预先声明的历史成分、historical universe、benchmark 日期网格和覆盖报告。
 
 完成条件：每个决策只读取当时可见成分；缺一日 universe 或 benchmark 都阻止 OOS 报告。
+
+状态：2026-08-12 已完成。3,789 个交易日的逐日沪深300/中证500原始快照、中证800
+`sh.000906`、historical universe 和全部曾任成员双价格均已入库。原始快照有 3,031,178 个成员日；
+按 instrument `[ipo_date, out_date)` 排除 41 个退市边界残留后，3,031,137 个策略有效成员日的
+universe、前复权和不复权覆盖均为 100%，benchmark 为 3,789/3,789，全部 issue count 为 0。
+BaoStock 在两个连续区间共 22 个交易日真实只返回 499 个中证500成员，原样保留且不补造。覆盖
+报告固定为 `formal_m4_oos=false`，M8.3/M8.4 仍未完成。
 
 ### M8.3：corporate action 与必要的 09:35
 
